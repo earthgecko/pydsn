@@ -6,11 +6,15 @@ import logging
 import dateutil.parser
 from lxml import etree
 
-
 def to_decimal(value):
-	if value == '' or value == 'null':
+	if value == '' or value == 'null' or value == 'none':
 		return None
 	return float(value)
+
+def to_int(value):
+	if value == '' or value == 'null' or value == 'none':
+		return None
+	return int(value)
 
 def filter_value(value, exclusions):
 	if value in exclusions:
@@ -34,12 +38,31 @@ class DSNParser(object):
 		self.log.debug("Fetching %s" % url)
 		response = self.http_session.get(url)
 		doc = etree.fromstring(response.content)
-		dishes = doc.xpath('/dsn/dish')
-		result = {}
-		for dish in dishes:
+		dishList = doc.xpath('/dsn/dish')
+		dishes = {}
+		for dish in dishList:
 			dish_name, data = self.parse_dish(dish)
-			result[dish_name] = data
+			dishes[dish_name] = data
+		stationList = doc.xpath('/dsn/station')
+		stations = {}
+		for station in stationList:
+			station_name, data = self.parse_station(station)
+			stations[station_name] = data
+		timeElem = doc.xpath('/dsn/timestamp')
+		result = {
+			'stations': stations,
+			'dishes': dishes,
+			'time': to_int(timeElem[0].text)
+		}
 		return result
+	
+	def parse_station(self, station):
+		data = {
+			'friendly_name': station.get('friendlyName'),
+			'time_utc': to_int(station.get('timeUTC')),
+			'time_zone_offset': to_int(station.get('timeZoneOffset'))
+		}
+		return station.get('name'), data
 	
 	def parse_dish(self, dish):
 		data = {
@@ -70,15 +93,6 @@ class DSNParser(object):
 		for down_signal in dish.findall('downSignal'):
 			data['down_signal'].append(self.parse_signal(down_signal, False))
 		
-		#if 'DSN' in data['targets']:
-		#	# A target of 'DSN' seems to indicate that the dish is out of service
-		#	data['targets'] = {}
-		#	data['up_signal'] = []
-		#	data['down_signal'] = []
-		#	data['online'] = False
-		#else:
-		#	data['online'] = True
-		
 		return dish.get('name'), data
 	
 	def parse_target(self, target):
@@ -91,27 +105,17 @@ class DSNParser(object):
 		return target.get('name'), data
 	
 	def parse_signal(self, signal, isUp):
-		#if signal.get('spacecraft') == 'DSN':
-		#    # DSN is a bogus spacecraft
-		#    return None
 		data = {
+			'frequency': to_decimal(signal.get('frequency')),   # Frequency (Hz). Always present but may be wrong if type is none
 			'type': signal.get('signalType'),                   # "data", "carrier", "ranging", or "none"
 			'debug': filter_value(signal.get('signalTypeDebug'), ['none','']),
 			'spacecraft': filter_value(signal.get('spacecraft'), ['']),
-			'spacecraft_id': to_decimal(signal.get('spacecraftId')),
+			'spacecraft_id': to_int(signal.get('spacecraftId')),
 			'power': to_decimal(signal.get('power')),           # Power (in dBm for downlink, kW for uplink.)
 			'data_rate': to_decimal(signal.get('dataRate'))     # Data rate, bits per second
 		}
 		
-		if signal.get('frequency') == '' or signal.get('frequency') == 'none':
-			data['frequency'] = None
-		else:
-			data['frequency'] = to_decimal(signal.get('frequency'))   # Frequency (Hz). Always present but may be wrong if type is none
-			
-		if data['spacecraft_id'] is not None:
-			data['spacecraft_id'] = int(data['spacecraft_id'])
-		
-		if data['debug'] is not None:
+		if data['debug'] is not None and data['debug'].strip() != '' and data['debug'].strip() != '-1':
 			data['state'] = self.parse_debug(data['debug'], isUp)
 		else:
 			data['state'] = None
@@ -121,12 +125,19 @@ class DSNParser(object):
 	def parse_debug(self, debug, isUp):
 		# all of this is mostly guesswork based on watching patterns and many google searches
 		if isUp:
-			words = debug.split()
-			data = {
-				'encoder': words[0],
-				'carrier': words[1] == '1',
-				'tracking': len(words) > 2 and words[2] == 'TRK'
-			}
+			if debug.strip() == 'TRK':
+				data = {
+					'encoder': 'OFF',
+					'carrier': False,
+					'tracking': True
+				}
+			else:
+				words = debug.split()
+				data = {
+					'encoder': words[0],
+					'carrier': words[1] == '1',
+					'tracking': len(words) > 2 and words[2] == 'TRK'
+				}
 		else:
 			words = debug.replace('OUT OF LOCK','OUT_OF_LOCK').replace('IN LOCK','IN_LOCK').split()
 			data = {
@@ -142,17 +153,17 @@ class DSNParser(object):
 		self.log.debug("Fetching config %s" % url)
 		response = self.http_session.get(url)
 		doc = etree.fromstring(response.content)
-		spacecraft = self.fetch_spacecraft(doc.xpath('/config/spacecraftMap/spacecraft'))
-		sites = self.fetch_sites(doc.xpath('/config/sites/site'))
+		spacecraft = self.parse_spacecraft(doc.xpath('/config/spacecraftMap/spacecraft'))
+		sites = self.parse_sites(doc.xpath('/config/sites/site'))
 		return sites, spacecraft
 	
-	def fetch_spacecraft(self, spacecraft):
+	def parse_spacecraft(self, spacecraft):
 		data = {}
 		for craft in spacecraft:
 			data[craft.get('name')] = craft.get('friendlyName')
 		return data
 	
-	def fetch_sites(self, sites):
+	def parse_sites(self, sites):
 		data = {}
 		for site in sites:
 			dishes = {}
@@ -163,7 +174,9 @@ class DSNParser(object):
 				}
 			data[site.get('name')] = {
 				'friendly_name': site.get('friendlyName'),
-				'dishes': dishes
+				'dishes': dishes,
+				'latitude': to_decimal(site.get('latitude')),
+				'longitude': to_decimal(site.get('longitude'))
 			}
 		return data
 
