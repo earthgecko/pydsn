@@ -5,8 +5,6 @@ from dbmodel import *
 import logging
 from peewee import MySQLDatabase, Using
 
-from pprint import pprint
-
 class DBSync(object):
 	def __init__(self):
 		self.log = logging.getLogger(__name__)
@@ -118,8 +116,11 @@ class DBSync(object):
 					cmd.execute()
 	
 	def punch_dishes(self, time, dishes):
-		with Using(self.db, [ConfigSpacecraft, ConfigDish, DataDish, DataTarget, DataSignal]):
+		with Using(self.db, [ConfigSpacecraft, ConfigState, ConfigDish, DataDish, DataTarget, DataSignal]):
 			with self.db.atomic():
+				existingStates = {}
+				for state in ConfigState.select():
+					existingStates[state.name] = state
 				existingDishes = {}
 				for dish in ConfigDish.select():
 					existingDishes[dish.name] = dish
@@ -129,7 +130,7 @@ class DBSync(object):
 					spacecraftByName[spacecraft.name.lower()] = spacecraft
 					if spacecraft.lastid:
 						spacecraftById[spacecraft.lastid] = spacecraft
-				self.log.debug("Reference data fetched")
+				self.log.info("Reference data fetched")
 				dishOut = []
 				targetOut = []
 				signalOut = []
@@ -151,9 +152,9 @@ class DBSync(object):
 						'windspeed': dishData['wind_speed'],
 						'flags': flags
 					})
-					targetMap = self.punch_targets(time, dish, dishData['targets'], spacecraftById, spacecraftByName, targetOut)
-					self.punch_signals(time, dish, targetMap, dishData['down_signal'], False, signalOut)
-					self.punch_signals(time, dish, targetMap, dishData['up_signal'], True, signalOut)
+					self.punch_targets(time, dish, dishData['targets'], spacecraftById, spacecraftByName, targetOut)
+					self.punch_signals(time, dish, spacecraftById, existingStates, dishData['down_signal'], False, signalOut)
+					self.punch_signals(time, dish, spacecraftById, existingStates, dishData['up_signal'], True, signalOut)
 				
 				if len(dishOut) > 0:
 					cmd = DataDish.insert_many(dishOut)
@@ -166,17 +167,15 @@ class DBSync(object):
 					cmd.execute()
 	
 	def punch_targets(self, time, dish, targets, spacecraftById, spacecraftByName, targetOut):
-		with Using(self.db, [ConfigSpacecraft]):
-			targetMap = {}
-			for targetName in targets:
-				targetData = targets[targetName]
-				spacecraft = spacecraftById.get(targetData['id'], None)
-				if spacecraft and spacecraft.name != targetName:
-					spacecraft = None
-				if not spacecraft:
-					spacecraft = spacecraftByName.get(targetName.lower(), None)
-				if spacecraft:
-					targetMap[targetData['id']] = spacecraft.id
+		for targetName in targets:
+			targetData = targets[targetName]
+			spacecraft = spacecraftById.get(targetData['id'], None)
+			if spacecraft and spacecraft.name.lower() != targetName.lower():
+				spacecraft = None
+			if not spacecraft:
+				spacecraft = spacecraftByName.get(targetName.lower(), None)
+			if spacecraft:
+				if targetData['down_range'] != -1 or targetData['up_range'] != -1 or targetData['rtlt'] != -1:
 					targetOut.append({
 						'configdishid': dish.id,
 						'time': time,
@@ -185,76 +184,57 @@ class DBSync(object):
 						'uplegrange': targetData['up_range'],
 						'rtlt': targetData['rtlt']
 					})
-					if spacecraft.lastid != targetData['id']:
-						cmd = (ConfigSpacecraft.update(lastid=targetData['id'])
-							.where(ConfigSpacecraft.id == spacecraft.id))
-						cmd.execute()
-						spacecraftById[targetData['id']] = spacecraft
-			return targetMap
+				if spacecraftById.get(targetData['id'], None) != spacecraft:
+					cmd = (ConfigSpacecraft.update(lastid=targetData['id'])
+						.where(ConfigSpacecraft.id == spacecraft.id))
+					cmd.execute()
+					spacecraftById[targetData['id']] = spacecraft
 	
-	def punch_signals(self, time, dish, targetMap, signals, isUp, signalOut):
+	def punch_signals(self, time, dish, spacecraftById, existingStates, signals, isUp, signalOut):
 		seq = 1
 		for signalData in signals:
+			if not signalData['debug']:
+				continue
 			isTesting = False
 			if signalData['spacecraft_id'] is None:
-				spacecraftId = None
-			elif not (targetMap.get(signalData['spacecraft_id'], None)):
-				spacecraftId = None
-				isTesting = True
+				spacecraft = None
 			else:
-				spacecraftId = targetMap[signalData['spacecraft_id']]
+				spacecraft = spacecraftById.get(signalData['spacecraft_id'], None)
+				if not spacecraft:
+					isTesting = True
+			
+			stateid = None
+			if signalData['debug']:
+				state = existingStates.get(signalData['debug'], None)
+				if not state:
+					state = ConfigState.create(
+						name = signalData['debug'],
+						updown = 'UP' if isUp else 'down',
+						signaltype = signalData['type']
+					)
+					existingStates[state.name] = state
+				stateid = state.id
 			
 			newRecord = {
 				'configdishid': dish.id,
 				'time': time,
 				'seq': seq,
-				'configspacecraftid': spacecraftId,
+				'configspacecraftid': spacecraft.id,
 				'updown': 'UP' if isUp else 'down',
 				'datarate': signalData['data_rate'],
 				'frequency': signalData['frequency'],
 				'power': signalData['power'],
 				'signaltype': signalData['type'],
-				'signaltypedebug': signalData['debug'],
-				'flags': '',
-				'decoder1': None,
-				'decoder2': None,
-				'encoding': None
+				'stateid': stateid,
+				'flags': 'testing' if isTesting else ''
 			}
 			seq += 1
-			
-			state = signalData['state']
-			if state is not None:
-				flags = ''
-				if state['carrier'] == True:
-					if flags != '':
-						flags += ',';
-					flags += 'carrier'
-				if state.get('tracking', False) == True:
-					if flags != '':
-						flags += ',';
-					flags += 'tracking'
-				if state.get('calibrating', False) == True:
-					if flags != '':
-						flags += ',';
-					flags += 'calibrating'
-				if state.get('encoder', None) == 'ON':
-					if flags != '':
-						flags += ',';
-					flags += 'encoding'
-				if isTesting:
-					if flags != '':
-						flags += ',';
-					flags += 'testing'
-				newRecord['flags'] = flags
-				newRecord['decoder1'] = state.get('decoder1',None)
-				newRecord['decoder2'] = state.get('decoder2',None)
-				newRecord['encoding'] = state.get('encoding',None)
 			
 			signalOut.append(newRecord)
 
 if __name__ == '__main__':
 	import dsn
-	logging.basicConfig(level=logging.DEBUG)
+	logging.basicConfig(level=logging.INFO)
 	dsn = dsn.DSN()
 	sync = DBSync()
 	dsn.data_callback = sync.punch_data

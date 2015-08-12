@@ -7,12 +7,12 @@ import dateutil.parser
 from lxml import etree
 
 def to_decimal(value):
-	if value == '' or value == 'null' or value == 'none':
+	if value in ('', 'null', 'none', 'NaN'):
 		return None
 	return float(value)
 
 def to_int(value):
-	if value == '' or value == 'null' or value == 'none':
+	if value in ('', 'null', 'none', 'NaN'):
 		return None
 	return int(value)
 
@@ -115,10 +115,10 @@ class DSNParser(object):
 			'data_rate': to_decimal(signal.get('dataRate'))     # Data rate, bits per second
 		}
 		
-		if data['debug'] is not None and data['debug'].strip() != '' and data['debug'].strip() != '-1':
-			data['state'] = self.parse_debug(data['debug'], isUp)
-		else:
-			data['state'] = None
+		#if data['debug'] is not None and data['debug'].strip() != '' and data['debug'].strip() != '-1':
+		#	data['state'] = self.parse_debug(data['debug'], isUp)
+		#else:
+		#	data['state'] = None
 		
 		return data
 	

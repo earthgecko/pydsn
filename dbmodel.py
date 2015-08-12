@@ -36,6 +36,15 @@ class ConfigSpacecraft(BaseModel):
     class Meta:
         db_table = 'configSpacecraft'
 
+class ConfigState(BaseModel):
+    id = PrimaryKeyField(db_column='ID')
+    name = TextField(db_column='state', unique=True)
+    updown = CharField(db_column='upDown')
+    signaltype = CharField(db_column='signalType')
+
+    class Meta:
+        db_table = 'configState'
+
 class DataDish(BaseModel):
     id = PrimaryKeyField(db_column='ID')
     azimuthangle = FloatField(db_column='azimuthAngle')
@@ -55,15 +64,12 @@ class DataSignal(BaseModel):
     configdishid = ForeignKeyField(ConfigDish, db_column='configDishID')
     configspacecraftid = ForeignKeyField(ConfigSpacecraft, db_column='configSpacecraftID', null=True)
     datarate = FloatField(db_column='dataRate', null=True)
-    decoder1 = CharField(null=True)
-    decoder2 = CharField(null=True)
-    encoding = CharField(null=True)
     flags = CharField()
     frequency = FloatField(null=True)
     power = FloatField(null=True)
     seq = IntegerField()
     signaltype = CharField(db_column='signalType')
-    signaltypedebug = CharField(db_column='signalTypeDebug', null=True)
+    stateid = ForeignKeyField(ConfigState, db_column='stateid', null=True)
     time = BigIntegerField()
     updown = CharField(db_column='upDown')
 
