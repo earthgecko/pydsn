@@ -63,7 +63,7 @@ class DataSignal(BaseModel):
     power = FloatField(null=True)
     seq = IntegerField()
     signaltype = CharField(db_column='signalType')
-    signaltypedebug = CharField(db_column='signalTypeDebug')
+    signaltypedebug = CharField(db_column='signalTypeDebug', null=True)
     time = BigIntegerField()
     updown = CharField(db_column='upDown')
 

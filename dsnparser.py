@@ -35,7 +35,7 @@ class DSNParser(object):
 	
 	def fetch_data(self):
 		url = self.get_url()
-		self.log.debug("Fetching %s" % url)
+		self.log.info("Fetching %s" % url)
 		response = self.http_session.get(url)
 		doc = etree.fromstring(response.content)
 		dishList = doc.xpath('/dsn/dish')
@@ -136,7 +136,8 @@ class DSNParser(object):
 				data = {
 					'encoder': words[0],
 					'carrier': words[1] == '1',
-					'tracking': len(words) > 2 and words[2] == 'TRK'
+					'tracking': len(words) > 2 and words[2] == 'TRK',
+					'calibrating': len(words) > 2 and words[2] == 'CAL'
 				}
 		else:
 			words = debug.replace('OUT OF LOCK','OUT_OF_LOCK').replace('IN LOCK','IN_LOCK').split()
@@ -150,7 +151,7 @@ class DSNParser(object):
 	
 	def fetch_config(self):
 		url = self.get_config_url()
-		self.log.debug("Fetching config %s" % url)
+		self.log.info("Fetching config %s" % url)
 		response = self.http_session.get(url)
 		doc = etree.fromstring(response.content)
 		spacecraft = self.parse_spacecraft(doc.xpath('/config/spacecraftMap/spacecraft'))
