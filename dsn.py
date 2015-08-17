@@ -10,8 +10,8 @@ class DSN(object):
 	def __init__(self):
 		self.log = logging.getLogger(__name__)
 		self.parser = DSNParser()
-		self.last_config_update = None
-		self.last_data_update = None
+		self.next_config_update = 0
+		self.next_data_update = 0
 		self.status_update_interval = 5  # Seconds
 		self.config_update_interval = 600  # Seconds
 		self.config_callback = None
@@ -21,21 +21,22 @@ class DSN(object):
 		try:
 			now = time.time()
 			
-			if (self.last_config_update is None or 
-					self.last_config_update <= now - self.config_update_interval):
-				self.last_config_update = now
+			if self.next_config_update <= now:
+				self.next_config_update = now + self.config_update_interval
 				self.sites, self.spacecraft = self.parser.fetch_config()
 				if self.config_callback:
 					self.config_callback(self.sites, self.spacecraft)
 					self.log.info('Config processing complete')
 			
-			if (self.last_data_update is None or 
-					self.last_data_update <= now - self.status_update_interval):
-				self.last_data_update = now
+			if self.next_data_update <= now:
+				self.next_data_update = (int)(now / self.status_update_interval + 1) * self.status_update_interval
 				new_data = self.parser.fetch_data()
 				if self.data_callback:
-					self.data_callback(new_data)
-					self.log.info('Status processing complete')
+					if not self.data_callback(new_data):
+						self.next_data_update = 0 # retry on next pass
+						self.log.info('Status processing rejected')
+					else:
+						self.log.info('Status processing complete')
 		
 		except ConnectionError, e:
 			self.log.warn("Unable to fetch data from DSN: %s" % e)
