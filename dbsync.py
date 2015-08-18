@@ -24,6 +24,8 @@ class DBSync(object):
 		self.existingDishes = None
 		self.spacecraftById = None
 		self.spacecraftByName = None
+		self.targetHist = None
+		self.last_time = 0
 	
 	def sync_config(self, sites, spacecrafts):
 		self.flush_ref()
@@ -110,36 +112,41 @@ class DBSync(object):
 		self.spacecraftByName = None
 	
 	def load_ref(self):
-		with Using(self.db, [ConfigSite, ConfigState, ConfigDish, ConfigSpacecraft]):
-			if not self.existingSites:
+		if not self.existingSites:
+			with Using(self.db, [ConfigSite]):
 				self.existingSites = {}
 				for site in ConfigSite.select():
 					self.existingSites[site.name] = site
-			
-			if not self.existingStates:
+		
+		if not self.existingStates:
+			with Using(self.db, [ConfigState]):
 				self.existingStates = {}
 				for state in ConfigState.select():
 					self.existingStates[state.name] = state
-			
-			if not self.existingDishes:
+		
+		if not self.existingDishes:
+			with Using(self.db, [ConfigDish]):
 				self.existingDishes = {}
 				for dish in ConfigDish.select():
 					self.existingDishes[dish.name] = dish
-			
-			if not self.spacecraftByName:
+		
+		if not self.spacecraftByName:
+			with Using(self.db, [ConfigSpacecraft]):
 				self.spacecraftById = {}
 				self.spacecraftByName = {}
 				for spacecraft in ConfigSpacecraft.select():
 					self.spacecraftByName[spacecraft.name.lower()] = spacecraft
 					if spacecraft.lastid:
 						self.spacecraftById[spacecraft.lastid] = spacecraft
-
 	
 	def punch_data(self, data):
 		time = data['time']
 		self.log.info('Received data for time %d' % ((int)(time/5000)))
 		self.load_ref()
 		#self.log.info('ref loaded')
+		if time == self.last_time:
+			return False
+		self.last_time = time
 		with self.db.atomic():
 			with Using(self.db, [DataEvent]):
 				if DataEvent.select(DataEvent.time).where(DataEvent.time == time).exists():
@@ -168,7 +175,13 @@ class DBSync(object):
 				updated_time = calendar.timegm(updated.utctimetuple())*1000 + updated.microsecond / 1000
 				
 				targets = {}
-				self.punch_targets(eventid, dish, dishData['targets'], targetOut)
+				if not self.targetHist:
+					self.targetHist = {}
+				if not(dish.id in self.targetHist):
+					self.targetHist[dish.id] = {}
+				targetHist = self.targetHist[dish.id]
+				
+				self.punch_targets(eventid, dish, dishData['targets'], targetOut, targetHist)
 				self.punch_signals(eventid, dish, dishData['down_signal'], False, signalOut, targets)
 				self.punch_signals(eventid, dish, dishData['up_signal'], True, signalOut, targets)
 				
@@ -197,7 +210,7 @@ class DBSync(object):
 				cmd = DataSignal.insert_many(signalOut)
 				cmd.execute()
 	
-	def punch_targets(self, eventid, dish, targets, targetOut):
+	def punch_targets(self, eventid, dish, targets, targetOut, targetHist):
 		for targetName in targets:
 			targetData = targets[targetName]
 			spacecraft = self.spacecraftById.get(targetData['id'], None)
@@ -205,20 +218,34 @@ class DBSync(object):
 				spacecraft = None
 			if not spacecraft:
 				spacecraft = self.spacecraftByName.get(targetName.lower(), None)
-			if spacecraft:
-				if targetData['down_range'] != -1 or targetData['up_range'] != -1 or targetData['rtlt'] != -1:
-					targetOut.append({
+				if not spacecraft:
+					return
+			if targetData['down_range'] != -1 or targetData['up_range'] != -1 or targetData['rtlt'] != -1:
+				if spacecraft.id in targetHist:
+					histEntry = targetHist[spacecraft.id]
+				else:
+					histEntry = (DataTarget.select().where(
+							DataTarget.configdishid==dish.id and DataTarget.configspacecraftid==spacecraft.id
+						).order_by(DataTarget.eventid.desc()).limit(1).dicts().first())
+					if histEntry:
+						targetHist[spacecraft.id] = histEntry
+				if (not histEntry or histEntry['downlegrange'] != targetData['down_range'] or 
+						histEntry['uplegrange'] != targetData['up_range'] or
+						histEntry['rtlt'] != targetData['rtlt']):
+					newTarget = {
 						'configdishid': dish.id,
 						'eventid': eventid,
 						'configspacecraftid': spacecraft.id,
 						'downlegrange': targetData['down_range'],
 						'uplegrange': targetData['up_range'],
 						'rtlt': targetData['rtlt']
-					})
-				if self.spacecraftById.get(targetData['id'], None) != spacecraft:
-					spacecraft.lastid = targetData['id']
-					spacecraft.save()
-					self.spacecraftById[targetData['id']] = spacecraft
+					}
+					targetOut.append(newTarget)
+					targetHist[spacecraft.id] = newTarget
+			if self.spacecraftById.get(targetData['id'], None) != spacecraft:
+				spacecraft.lastid = targetData['id']
+				spacecraft.save()
+				self.spacecraftById[targetData['id']] = spacecraft
 	
 	def punch_signals(self, eventid, dish, signals, isUp, signalOut, targets):
 		for signalData in signals:
