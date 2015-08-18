@@ -127,15 +127,15 @@ class DSNParser(object):
 		if isUp:
 			if debug.strip() == 'TRK':
 				data = {
-					'encoder': 'OFF',
-					'carrier': False,
+					'carrier': 'OFF',
+					'encoder': False,
 					'tracking': True
 				}
 			else:
 				words = debug.split()
 				data = {
-					'encoder': words[0],
-					'carrier': words[1] == '1',
+					'carrier': words[0],
+					'encoder': words[1] == '1',
 					'tracking': len(words) > 2 and words[2] == 'TRK',
 					'calibrating': len(words) > 2 and words[2] == 'CAL'
 				}

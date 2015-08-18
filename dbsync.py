@@ -2,6 +2,7 @@
 from __future__ import division, absolute_import, print_function, unicode_literals
 import ConfigParser
 from dbmodel import *
+import calendar
 import logging
 from peewee import Using
 from playhouse.pool import PooledMySQLDatabase
@@ -136,70 +137,67 @@ class DBSync(object):
 	
 	def punch_data(self, data):
 		time = data['time']
+		self.log.info('Received data for time %d' % ((int)(time/5000)))
 		self.load_ref()
 		#self.log.info('ref loaded')
-		with Using(self.db, [DataSite]):
-			if DataSite.select(DataSite.time).where(DataSite.time == time).exists():
-				return False
-			self.punch_stations(time, data['stations'])
-		#self.log.info('stations loaded')
-		self.punch_dishes(time, data['dishes'])
+		with self.db.atomic():
+			with Using(self.db, [DataEvent]):
+				if DataEvent.select(DataEvent.time).where(DataEvent.time == time).exists():
+					return False
+				event = DataEvent.create(time=time)
+			#self.log.info('stations loaded')
+			self.punch_dishes(event.id, data['dishes'])
 		return True
 	
-	def punch_stations(self, time, stations):
-		with self.db.atomic():
-			dataSiteRows = []
-			for stationName in stations:
-				stationData = stations[stationName]
-				site = self.existingSites[stationName]
-				dataSiteRows.append({
-					'configsiteid': site.id,
-					'time': time,
-					'timeutc': stationData['time_utc'],
-					'timezoneoffset': stationData['time_zone_offset']})
-			if len(dataSiteRows) > 0:
-				cmd = DataSite.insert_many(dataSiteRows)
+	def punch_dishes(self, eventid, dishes):
+		with Using(self.db, [ConfigSpacecraft, ConfigState, DataDish, DataTarget, DataSignal]):
+			dishOut = []
+			targetOut = []
+			signalOut = []
+			for dishName in dishes:
+				dishData = dishes[dishName]
+				dish = self.existingDishes[dishName]
+				flags = ''
+				for flag in dishData['flags']:
+					if flags != '':
+						flags += ','
+					flags += flag
+				created = dishData['created']
+				updated = dishData['updated']
+				created_time = calendar.timegm(created.utctimetuple())*1000 + created.microsecond / 1000
+				updated_time = calendar.timegm(updated.utctimetuple())*1000 + updated.microsecond / 1000
+				
+				targets = {}
+				self.punch_targets(eventid, dish, dishData['targets'], targetOut)
+				self.punch_signals(eventid, dish, dishData['down_signal'], False, signalOut, targets)
+				self.punch_signals(eventid, dish, dishData['up_signal'], True, signalOut, targets)
+				
+				targetList = targets.keys()
+				dishOut.append({
+					'configdishid': dish.id,
+					'eventid': eventid,
+					'azimuthangle': dishData['azimuth_angle'],
+					'elevationangle': dishData['elevation_angle'],
+					'createdtime': created_time,
+					'updatedtimediff': updated_time - created_time,
+					'windspeed': dishData['wind_speed'],
+					'flags': flags,
+					'targetspacecraft1': targetList[0] if len(targetList) > 0 else None,
+					'targetspacecraft2': targetList[1] if len(targetList) > 1 else None,
+					'targetspacecraft3': targetList[2] if len(targetList) > 2 else None
+				})
+			
+			if len(dishOut) > 0:
+				cmd = DataDish.insert_many(dishOut)
+				cmd.execute()
+			if len(targetOut) > 0:
+				cmd = DataTarget.insert_many(targetOut)
+				cmd.execute()
+			if len(signalOut) > 0:
+				cmd = DataSignal.insert_many(signalOut)
 				cmd.execute()
 	
-	def punch_dishes(self, time, dishes):
-		with Using(self.db, [ConfigSpacecraft, ConfigState, DataDish, DataTarget, DataSignal]):
-			with self.db.atomic():
-				dishOut = []
-				targetOut = []
-				signalOut = []
-				for dishName in dishes:
-					dishData = dishes[dishName]
-					dish = self.existingDishes[dishName]
-					flags = ''
-					for flag in dishData['flags']:
-						if flags != '':
-							flags += ','
-						flags += flag
-					dishOut.append({
-						'configdishid': dish.id,
-						'time': time,
-						'azimuthangle': dishData['azimuth_angle'],
-						'elevationangle': dishData['elevation_angle'],
-						'created': self.db.truncate_date('second', dishData['created']),
-						'updated': self.db.truncate_date('second', dishData['updated']),
-						'windspeed': dishData['wind_speed'],
-						'flags': flags
-					})
-					self.punch_targets(time, dish, dishData['targets'], targetOut)
-					self.punch_signals(time, dish, dishData['down_signal'], False, signalOut)
-					self.punch_signals(time, dish, dishData['up_signal'], True, signalOut)
-				
-				if len(dishOut) > 0:
-					cmd = DataDish.insert_many(dishOut)
-					cmd.execute()
-				if len(targetOut) > 0:
-					cmd = DataTarget.insert_many(targetOut)
-					cmd.execute()
-				if len(signalOut) > 0:
-					cmd = DataSignal.insert_many(signalOut)
-					cmd.execute()
-	
-	def punch_targets(self, time, dish, targets, targetOut):
+	def punch_targets(self, eventid, dish, targets, targetOut):
 		for targetName in targets:
 			targetData = targets[targetName]
 			spacecraft = self.spacecraftById.get(targetData['id'], None)
@@ -211,7 +209,7 @@ class DBSync(object):
 				if targetData['down_range'] != -1 or targetData['up_range'] != -1 or targetData['rtlt'] != -1:
 					targetOut.append({
 						'configdishid': dish.id,
-						'time': time,
+						'eventid': eventid,
 						'configspacecraftid': spacecraft.id,
 						'downlegrange': targetData['down_range'],
 						'uplegrange': targetData['up_range'],
@@ -222,21 +220,20 @@ class DBSync(object):
 					spacecraft.save()
 					self.spacecraftById[targetData['id']] = spacecraft
 	
-	def punch_signals(self, time, dish, signals, isUp, signalOut):
-		seq = 1
+	def punch_signals(self, eventid, dish, signals, isUp, signalOut, targets):
 		for signalData in signals:
 			if not signalData['debug']:
 				continue
-			isTesting = False
 			if signalData['spacecraft_id'] is None:
 				spacecraftid = None
 			else:
 				spacecraft = self.spacecraftById.get(signalData['spacecraft_id'], None)
 				if spacecraft:
 					spacecraftid = spacecraft.id
+					targets[spacecraftid] = True
 				else:
-					spacecraftid = None
-					isTesting = True
+					spacecraftid = 0
+					targets[0] = True
 			
 			stateid = None
 			if signalData['debug']:
@@ -250,22 +247,19 @@ class DBSync(object):
 					self.existingStates[state.name] = state
 				stateid = state.id
 			
-			newRecord = {
-				'configdishid': dish.id,
-				'time': time,
-				'seq': seq,
-				'configspacecraftid': spacecraftid,
-				'updown': 'UP' if isUp else 'down',
-				'datarate': signalData['data_rate'],
-				'frequency': signalData['frequency'],
-				'power': signalData['power'],
-				'signaltype': signalData['type'],
-				'stateid': stateid,
-				'flags': 'testing' if isTesting else ''
-			}
-			seq += 1
-			
-			signalOut.append(newRecord)
+			if not(state.valuetype in ('none','idle')):
+				newRecord = {
+					'configdishid': dish.id,
+					'eventid': eventid,
+					'configspacecraftid': spacecraftid,
+					'updown': 'up' if isUp else 'down',
+					'datarate': signalData['data_rate'],
+					'frequency': signalData['frequency'],
+					'power': signalData['power'],
+					'signaltype': signalData['type'],
+					'stateid': stateid
+				}
+				signalOut.append(newRecord)
 
 if __name__ == '__main__':
 	import dsn
