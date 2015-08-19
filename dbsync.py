@@ -25,6 +25,7 @@ class DBSync(object):
 		self.spacecraftById = None
 		self.spacecraftByName = None
 		self.targetHist = None
+		self.dishHist = None
 		self.last_time = 0
 	
 	def sync_config(self, sites, spacecrafts):
@@ -157,7 +158,7 @@ class DBSync(object):
 		return True
 	
 	def punch_dishes(self, eventid, dishes):
-		with Using(self.db, [ConfigSpacecraft, ConfigState, DataDish, DataTarget, DataSignal]):
+		with Using(self.db, [ConfigSpacecraft, ConfigState, DataDish, DataDishPos, DataTarget, DataSignal]):
 			dishOut = []
 			targetOut = []
 			signalOut = []
@@ -186,22 +187,50 @@ class DBSync(object):
 				self.punch_signals(eventid, dish, dishData['up_signal'], True, signalOut, targets)
 				
 				targetList = targets.keys()
-				dishOut.append({
-					'configdishid': dish.id,
-					'eventid': eventid,
-					'azimuthangle': dishData['azimuth_angle'],
-					'elevationangle': dishData['elevation_angle'],
-					'createdtime': created_time,
-					'updatedtimediff': updated_time - created_time,
-					'windspeed': dishData['wind_speed'],
-					'flags': flags,
-					'targetspacecraft1': targetList[0] if len(targetList) > 0 else None,
-					'targetspacecraft2': targetList[1] if len(targetList) > 1 else None,
-					'targetspacecraft3': targetList[2] if len(targetList) > 2 else None
-				})
+				
+				if not self.dishHist:
+					self.dishHist = {}
+				if dish.id in self.dishHist:
+					histEntry = self.dishHist[dish.id]
+				else:
+					histEntry = (DataDish.select()
+							.where(DataDish.configdishid==dish.id)
+							.order_by(DataDish.eventid.desc())
+							.limit(1).dicts().first())
+					if histEntry:
+						self.dishHist[dish.id] = histEntry
+				if (not histEntry or histEntry['createdtime'] != created_time or 
+						histEntry['updatedtime'] != updated_time or
+						histEntry['flags'] != flags or
+						histEntry['targetspacecraft1'] != (targetList[0] if len(targetList) > 0 else None) or
+						histEntry['targetspacecraft2'] != (targetList[1] if len(targetList) > 1 else None) or
+						histEntry['targetspacecraft3'] != (targetList[2] if len(targetList) > 2 else None)):
+					newDish = {
+						'configdishid': dish.id,
+						'eventid': eventid,
+						'createdtime': created_time,
+						'updatedtime': updated_time,
+						'flags': flags,
+						'targetspacecraft1': targetList[0] if len(targetList) > 0 else None,
+						'targetspacecraft2': targetList[1] if len(targetList) > 1 else None,
+						'targetspacecraft3': targetList[2] if len(targetList) > 2 else None
+					}
+					DataDish.insert(**newDish)
+					self.dishHist[dish.id] = newDish
+				
+				if (dishData['azimuth_angle'] is not None and
+						dishData['elevation_angle'] is not None and 
+						dishData['wind_speed'] is not None):
+					dishOut.append({
+						'configdishid': dish.id,
+						'eventid': eventid,
+						'azimuthangle': dishData['azimuth_angle'],
+						'elevationangle': dishData['elevation_angle'],
+						'windspeed': dishData['wind_speed']
+					})
 			
 			if len(dishOut) > 0:
-				cmd = DataDish.insert_many(dishOut)
+				cmd = DataDishPos.insert_many(dishOut)
 				cmd.execute()
 			if len(targetOut) > 0:
 				cmd = DataTarget.insert_many(targetOut)
@@ -252,27 +281,26 @@ class DBSync(object):
 			if not signalData['debug']:
 				continue
 			if signalData['spacecraft_id'] is None:
-				spacecraftid = None
+				continue
 			else:
 				spacecraft = self.spacecraftById.get(signalData['spacecraft_id'], None)
 				if spacecraft:
 					spacecraftid = spacecraft.id
-					targets[spacecraftid] = True
 				else:
 					spacecraftid = 0
-					targets[0] = True
+			targets[spacecraftid] = True
 			
-			stateid = None
-			if signalData['debug']:
-				state = self.existingStates.get(signalData['debug'], None)
-				if not state:
-					state = ConfigState.create(
-						name = signalData['debug'],
-						updown = 'UP' if isUp else 'down',
-						signaltype = signalData['type']
-					)
-					self.existingStates[state.name] = state
-				stateid = state.id
+			state = self.existingStates.get(signalData['debug'], None)
+			if not state:
+				state = ConfigState.create(
+					name = signalData['debug'],
+					updown = 'UP' if isUp else 'down',
+					signaltype = signalData['type']
+				)
+				self.existingStates[state.name] = state
+			if not spacecraft.encoding and state.encoding:
+				spacecraft.encoding = state.encoding
+				spacecraft.save()
 			
 			if not(state.valuetype in ('none','idle')):
 				newRecord = {
@@ -283,8 +311,7 @@ class DBSync(object):
 					'datarate': signalData['data_rate'],
 					'frequency': signalData['frequency'],
 					'power': signalData['power'],
-					'signaltype': signalData['type'],
-					'stateid': stateid
+					'stateid': state.id
 				}
 				signalOut.append(newRecord)
 

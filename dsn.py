@@ -20,7 +20,6 @@ class DSN(object):
 	def update(self):
 		try:
 			now = time.time()
-			
 			if self.next_config_update <= now:
 				self.next_config_update = now + self.config_update_interval
 				self.sites, self.spacecraft = self.parser.fetch_config()
@@ -28,12 +27,12 @@ class DSN(object):
 					self.config_callback(self.sites, self.spacecraft)
 					self.log.info('Config processing complete')
 			
+			now = time.time()
 			if self.next_data_update <= now:
 				self.next_data_update = (int)(now / self.status_update_interval + 1) * self.status_update_interval
 				new_data = self.parser.fetch_data()
 				if self.data_callback:
 					if not self.data_callback(new_data):
-						self.next_data_update = 0 # retry on next pass
 						self.log.info('Status processing rejected')
 					else:
 						self.log.info('Status processing complete')
