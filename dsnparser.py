@@ -117,32 +117,10 @@ class DSNParser(object):
 		}
 		
 		#if data['debug'] is not None and data['debug'].strip() != '' and data['debug'].strip() != '-1':
-		#	data['state'] = self.parse_debug(data['debug'], isUp)
+		#	data['state'] = parse_debug(data['debug'], isUp)
 		#else:
 		#	data['state'] = None
 		
-		return data
-	
-	def parse_debug(self, debug, isUp):
-		# all of this is mostly guesswork based on watching patterns and many google searches
-		if isUp:
-			words = debug.split(' ')
-			data = {
-				'carrier': words[0] == 'ON',
-				'encoder': words[1] == '1',
-				'task': words[2] if len(words) > 2 else None
-			}
-		else:
-			words = (debug.replace('OUT OF LOCK','OUT_OF_LOCK')
-				.replace('IN LOCK','IN_LOCK')
-				.replace('WAIT FOR LOCK','WAIT_FOR_LOCK')
-				.split(' '))
-			data = {
-				'decoder1': words[0].replace('_', ' '),
-				'decoder2': words[1].replace('_', ' '),
-				'carrier': words[2] == '1',
-				'encoding': words[3]
-			}
 		return data
 	
 	def fetch_config(self):
@@ -177,6 +155,50 @@ class DSNParser(object):
 				'longitude': to_decimal(site.get('longitude'))
 			}
 		return data
+
+def parse_debug(debug, isUp):
+	# all of this is mostly guesswork based on watching patterns and many google searches
+	flags = set()
+	if isUp:
+		words = debug.split(' ')
+		if words[0] == 'ON':
+			flags.add('carrier')
+		if words[1] == '1':
+			flags.add('encoding')
+		task = words[2] if len(words) > 2 else None
+		data = {
+			'flags': flags,
+			'task': task,
+			'valueType': (
+				'data' if 'encoding' in flags else
+				'carrier' if 'carrier' in flags else
+				'idle' if words[0] == 'OFF' and task == 'IDLE' else
+				'setup' if task and task != 'IDLE' else
+				'none'
+			)
+		}
+	else:
+		words = (debug.replace('OUT OF LOCK','OUT_OF_LOCK')
+			.replace('IN LOCK','IN_LOCK')
+			.replace('WAIT FOR LOCK','WAIT_FOR_LOCK')
+			.split(' '))
+		if words[2] == '1':
+			flags.add('carrier')
+		decoder1 = words[0].replace('_', ' ')
+		data = {
+			'flags': flags,
+			'decoder1': decoder1,
+			'decoder2': words[1].replace('_', ' '),
+			'encoding': words[3],
+			'valueType': (
+				'data' if decoder1 == 'IN LOCK' else
+				'carrier' if 'carrier' in flags else
+				'setup' if decoder1 == 'OUT OF LOCK' else
+				'idle' if decoder1 == 'IDLE' else
+				'none'
+			)
+		}
+	return data
 
 if __name__ == '__main__':
 	parser = DSNParser()
