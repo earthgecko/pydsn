@@ -98,7 +98,8 @@ class DSNParser(object):
 	
 	def parse_target(self, target):
 		data = {
-			'id': int(target.get('id')),
+			'spacecraft': target.get('name'),
+			'spacecraft_id': int(target.get('id')),
 			'up_range': float(target.get('uplegRange')),        # Up leg range, meters
 			'down_range': float(target.get('downlegRange')),    # Down leg range, meters
 			'rtlt': float(target.get('rtlt'))                   # Round-trip light time, in seconds
@@ -165,7 +166,7 @@ def parse_debug(debug, isUp):
 			flags.add('carrier')
 		if words[1] == '1':
 			flags.add('encoding')
-		task = words[2] if len(words) > 2 else None
+		task = filter_value(words[2],'') if len(words) > 2 else None
 		data = {
 			'flags': flags,
 			'task': task,
@@ -184,12 +185,12 @@ def parse_debug(debug, isUp):
 			.split(' '))
 		if words[2] == '1':
 			flags.add('carrier')
-		decoder1 = words[0].replace('_', ' ')
+		decoder1 = filter_value(words[0].replace('_', ' '),'')
 		data = {
 			'flags': flags,
 			'decoder1': decoder1,
-			'decoder2': words[1].replace('_', ' '),
-			'encoding': words[3],
+			'decoder2': filter_value(words[1].replace('_', ' '),''),
+			'encoding': filter_value(words[3], ''),
 			'valueType': (
 				'data' if decoder1 == 'IN LOCK' else
 				'carrier' if 'carrier' in flags else

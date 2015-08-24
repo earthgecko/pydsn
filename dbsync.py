@@ -1,12 +1,15 @@
 # coding=utf-8
 from __future__ import division, absolute_import, print_function, unicode_literals
+import calendar
 import ConfigParser
 from dbmodel import *
 from dsnparser import parse_debug
-import calendar
 import logging
+from operator import attrgetter
 from peewee import Using
 from playhouse.pool import PooledMySQLDatabase
+
+from pprint import pprint
 
 class DBSync(object):
 	def __init__(self):
@@ -96,16 +99,14 @@ class DBSync(object):
 					spacecraftDescr = spacecrafts[spacecraftName]
 					spacecraft = existingSpacecraft.get(spacecraftName, None)
 					if spacecraft:
-						if spacecraft.friendlyname != spacecraftDescr:
+						if spacecraft.friendlyname != spacecraftDescr or spacecraft.flags != '':
 							self.log.info("Updating config: spacecraft %s" % spacecraftName)
-							cmd = (ConfigSpacecraft.update(friendlyname=spacecraftDescr)
+							cmd = (ConfigSpacecraft.update(friendlyname=spacecraftDescr, lastid=None, flags='')
 								.where(ConfigSpacecraft.id == spacecraft.id))
 							cmd.execute()
 					else:
 						self.log.info("Creating config: spacecraft %s" % spacecraftName)
-						ConfigSpacecraft.create(
-							name=spacecraftName,
-							friendlyname=spacecraftDescr)
+						ConfigSpacecraft.create(name=spacecraftName, friendlyname=spacecraftDescr)
 	
 	def flush_ref(self):
 		self.existingSites = None
@@ -151,11 +152,24 @@ class DBSync(object):
 			return False
 		self.last_time = time
 		with self.db.atomic():
+			
+			# handle station data
+			for stationName in data['stations']:
+				stationData = data['stations'][stationName]
+				site = self.existingSites[stationName]
+				if stationData['time_zone_offset'] != site.timezoneoffset:
+					with Using(self.db, [ConfigSite]):
+						site.timezoneoffset = stationData['time_zone_offset']
+						site.save()
+			#self.log.info('stations loaded')
+			
+			# create the time event
 			with Using(self.db, [DataEvent]):
 				if DataEvent.select(DataEvent.time).where(DataEvent.time == time).exists():
 					return False
 				event = DataEvent.create(time=time)
-			#self.log.info('stations loaded')
+			
+			# do everything else
 			self.punch_dishes(event.id, data['dishes'])
 		return True
 	
@@ -176,22 +190,13 @@ class DBSync(object):
 				# collect the list of current spacecraft targets from the signal reports
 				targets = {}
 				isTesting = False
-				for signalData in dishData['down_signal']:
+				for signalData in (dishData.get('down_signal', []) + dishData.get('up_signal', [])):
 					if signalData['spacecraft_id']:
-						spacecraft = self.spacecraftById.get(signalData['spacecraft_id'], None)
+						spacecraft = self.get_spacecraft(signalData)
 						if spacecraft:
-							spacecraftid = spacecraft.id
-						else:
-							isTesting = True
-					targets[spacecraftid] = True
-				for signalData in dishData['down_signal']:
-					if signalData['spacecraft_id']:
-						spacecraft = self.spacecraftById.get(signalData['spacecraft_id'], None)
-						if spacecraft:
-							spacecraftid = spacecraft.id
-						else:
-							isTesting = True
-					targets[spacecraftid] = True
+							targets[spacecraft.id] = True
+							if 'Testing' in spacecraft.flags:
+								isTesting = True
 				if isTesting:
 					if flags != '':
 						flags += ','
@@ -279,13 +284,9 @@ class DBSync(object):
 			targetData = targets[targetName]
 			
 			# identify the target spaceship
-			spacecraft = self.spacecraftById.get(targetData['id'], None)
-			if spacecraft and spacecraft.name.lower() != targetName.lower():
-				spacecraft = None
+			spacecraft = self.get_spacecraft(targetData)
 			if not spacecraft:
-				spacecraft = self.spacecraftByName.get(targetName.lower(), None)
-				if not spacecraft:
-					return
+				return
 			
 			if targetData['down_range'] != -1 or targetData['up_range'] != -1 or targetData['rtlt'] != -1:
 				
@@ -313,12 +314,6 @@ class DBSync(object):
 					}
 					targetOut.append(newTarget)
 					targetHist[spacecraft.id] = newTarget
-			
-			# If we don't know the official spacecraft_id, push it to the ConfigSpacraft table
-			if self.spacecraftById.get(targetData['id'], None) != spacecraft:
-				spacecraft.lastid = targetData['id']
-				spacecraft.save()
-				self.spacecraftById[targetData['id']] = spacecraft
 	
 	def collect_signals(self, dataDish, isUp):
 		upDown = 'up' if isUp else 'down'
@@ -332,7 +327,7 @@ class DBSync(object):
 					(DataSignal.updown == upDown) &
 					(DataSignal.eventid == eventId)
 					)):
-				key = str(entry.configspacecraftid) + ':' + entry.flags
+				key = str(entry.configspacecraftid) + ':' + entry.flags.lower()
 				results[key] = entry
 		return results
 	
@@ -342,19 +337,20 @@ class DBSync(object):
 		
 		for signalData in signals:
 			# identify the target spaceship
-			if not signalData['debug'] or not signalData['spacecraft_id']:
+			if not signalData['debug']:
 				continue
-			spacecraft = self.spacecraftById.get(signalData['spacecraft_id'], None)
-			spacecraftid = spacecraft.id if spacecraft else 0
+			spacecraft = self.get_spacecraft(signalData)
+			if not spacecraft:
+				continue
 			
 			state = self.get_state(signalData['debug'], isUp, signalData['type'])
 			
 			#collect signal flags
 			flags = set()
-			if signalData['data_rate'] == 0:
+			if signalData['data_rate'] == 0.0:
 				if state.encoding == 'UNC':
 					flags.add('unc') 
-				elif 'isArray' in dataDish.flags:
+				elif 'Array' in dataDish.flags:
 					flags.add('slave')
 			
 			# punch the spacecraft with its last known protocol
@@ -363,7 +359,7 @@ class DBSync(object):
 				spacecraft.save()
 			
 			# create a unique id for this signal
-			key = str(spacecraftid) + ':' + ','.join(sorted(flags))
+			key = str(spacecraft.id) + ':' + ','.join(sorted(flags)).lower()
 			ourSignals[key] = {
 				'spacecraft': spacecraft,
 				'state': state,
@@ -379,7 +375,7 @@ class DBSync(object):
 					if not histEntry:
 						self.log.info('CHANGED: no entry %s' % key)
 					else:
-						self.log.info('CHANGED(%s): %d -> %s[%d]' % (key, histEntry.stateid, state.name, state.id))
+						self.log.info('CHANGED(%s on %d): %d -> %s[%d]' % (key, histEntry.configspacecraftid, histEntry.stateid, state.name, state.id))
 					isChanged = True
 		
 		# now, do we have any differences between what we have now and the previous iteration?
@@ -389,21 +385,22 @@ class DBSync(object):
 		
 		if isChanged:
 			signalHist.clear()
-		
+			pprint(signals)
+			pprint(ourSignals)
 		for key in ourSignals:
 			entry = ourSignals[key]
 			state = entry['state']
 			if isChanged:
 				# our state has changed, create a new signal record
-				self.log.info('new signal has state=%s[%d], flags=%s' %  (state.name, state.id, ','.join(entry['flags'])))
-				spacecraftid = entry['spacecraft'].id if entry['spacecraft'] else 0
+				spacecraft = entry['spacecraft']
+				self.log.info('new signal(%s on %d) has state=%s[%d], flags=%s' % (key, spacecraft.id, state.name, state.id, ','.join(entry['flags'])))
 				baseSignal = DataSignal.create(
 					eventid = eventid,
 					datadishid = dataDish.id,
 					configdishid = dish.id,
 					updown = 'up' if isUp else 'down',
 					stateid = state.id,
-					configspacecraftid = spacecraftid,
+					configspacecraftid = spacecraft.id,
 					flags = ','.join(entry['flags'])
 				)
 				signalHist[key] = baseSignal
@@ -423,22 +420,50 @@ class DBSync(object):
 				signalOut.append(newRecord)
 	
 	def get_state(self, debug, isUp, signalType):
+		self.log.info('resolving debug %s, isUp = %s' % (debug, str(isUp)))
 		state = self.existingStates.get(debug, None)
-		if not state:
-			parsed = parse_debug(debug, isUp)
-			state = ConfigState.create(
-				name = debug,
-				updown = 'UP' if isUp else 'down',
-				signaltype = signalType,
-				decoder1 = parsed.get('decoder1', None),
-				decoder2 = parsed.get('decoder2', None),
-				encoding = parsed.get('encoding', None),
-				task = parsed.get('task', None),
-				flags = ','.join(parsed.get('flags', set())),
-				valuetype = parsed.get('valueType', None)
-			)
-			self.existingStates[state.name] = state
+		if state:
+			return state
+		
+		parsed = parse_debug(debug, isUp)
+		state = ConfigState.create(
+			name = debug,
+			updown = 'UP' if isUp else 'down',
+			signaltype = signalType,
+			decoder1 = parsed.get('decoder1', None),
+			decoder2 = parsed.get('decoder2', None),
+			encoding = parsed.get('encoding', None),
+			task = parsed.get('task', None),
+			flags = ','.join(parsed.get('flags', set())),
+			valuetype = parsed.get('valueType', None)
+		)
+		self.existingStates[state.name] = state
 		return state
+	
+	def get_spacecraft(self, targetData):
+		targetName = targetData['spacecraft']
+		targetId = targetData['spacecraft_id']
+		
+		# first look it up by name
+		spacecraft = self.spacecraftById.get(targetId, None)
+		if spacecraft:
+			return spacecraft if spacecraft.name.lower() == targetName.lower() else None
+		
+		# couldn't find it by id, find it by name
+		spacecraft = self.spacecraftByName.get(targetName.lower(), None)
+		if spacecraft:
+			# If we don't know the official spacecraft_id, push it to the ConfigSpacraft table
+			if self.spacecraftById.get(targetId, None) != spacecraft:
+				spacecraft.lastid = targetId
+				spacecraft.save()
+				self.spacecraftById[targetId] = spacecraft
+			return spacecraft
+		
+		# couldn't find it anywhere, let's create it as a testing "spacecraft"
+		spacecraft = ConfigSpacecraft.create(lastid=targetId, name=targetName, flags='Testing')
+		self.spacecraftByName[targetName.lower()] = spacecraft
+		self.spacecraftById[targetId] = spacecraft
+		return spacecraft
 
 if __name__ == '__main__':
 	import dsn
