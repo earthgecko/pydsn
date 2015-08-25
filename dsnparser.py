@@ -174,7 +174,7 @@ def parse_debug(debug, isUp):
 				'data' if 'encoding' in flags else
 				'carrier' if 'carrier' in flags else
 				'idle' if words[0] == 'OFF' and task == 'IDLE' else
-				'setup' if task and task != 'IDLE' else
+				'task' if task and task != 'IDLE' else
 				'none'
 			)
 		}
@@ -192,10 +192,11 @@ def parse_debug(debug, isUp):
 			'decoder2': filter_value(words[1].replace('_', ' '),''),
 			'encoding': filter_value(words[3], ''),
 			'valueType': (
-				'data' if decoder1 == 'IN LOCK' else
-				'carrier' if 'carrier' in flags else
-				'setup' if decoder1 == 'OUT OF LOCK' else
+				'data' if decoder1 == 'IN LOCK' and decoder2 in ('IN LOCK','OFF') else
+				'carrier' if decoder1 == 'IDLE' and 'carrier' in flags else
+				'carrier+' if 'carrier' in flags else
 				'idle' if decoder1 == 'IDLE' else
+				'idle+' if decoder1 else
 				'none'
 			)
 		}

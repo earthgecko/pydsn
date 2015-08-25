@@ -5,7 +5,7 @@ import ConfigParser
 from dbmodel import *
 from dsnparser import parse_debug
 import logging
-from operator import attrgetter
+from operator import itemgetter
 from peewee import Using
 from playhouse.pool import PooledMySQLDatabase
 
@@ -173,8 +173,26 @@ class DBSync(object):
 			self.punch_dishes(event.id, data['dishes'])
 		return True
 	
+	def discover_arrays(self, dishes):
+		# go through the signals being specified by arrayed dishes and try to find the "primary" signal,
+		# if there is one (yet)
+		majorSignals = {}
+		for dishName in dishes:
+			dishData = dishes[dishName]
+			if not('Array' in dishData['flags']):
+				continue
+			for signalData in dishData['down_signal']:
+				spacecraftId = signalData['spacecraft_id']
+				if spacecraftId in majorSignals:
+					continue
+				state = self.get_state(signalData['debug'], False, signalData['type'])
+				if state.valuetype in ('data','carrier+'):
+					majorSignals[spacecraftId] = signalData
+		return majorSignals
+	
 	def punch_dishes(self, eventid, dishes):
 		with Using(self.db, [ConfigSpacecraft, ConfigState, DataDish, DataDishPos, DataTarget, DataSignal, DataSignalDet]):
+			arrayedSignals = self.discover_arrays(dishes)
 			dishOut = []
 			targetOut = []
 			signalOut = []
@@ -236,13 +254,10 @@ class DBSync(object):
 						targetspacecraft3 = targetList[2] if len(targetList) > 2 else None
 					)
 					self.dishHist[dish.id] = histEntry
-					signalHist = { 'up': {}, 'down': {} }
+					signalHist = {}
 					self.signalHist[dish.id] = signalHist
 				elif not dish.id in self.signalHist:
-					signalHist = {
-						'up': self.collect_signals(histEntry, True),
-						'down': self.collect_signals(histEntry, False)
-					}
+					signalHist = self.collect_signals(histEntry)
 					self.signalHist[dish.id] = signalHist
 				else:
 					signalHist = self.signalHist[dish.id]
@@ -255,8 +270,8 @@ class DBSync(object):
 				targetHist = self.targetHist[dish.id]
 				
 				self.punch_targets(eventid, dish, dishData['targets'], targetOut, targetHist)
-				self.punch_signals(eventid, dish, histEntry, dishData['down_signal'], False, signalHist['down'], signalOut)
-				self.punch_signals(eventid, dish, histEntry, dishData['up_signal'], True, signalHist['up'], signalOut)
+				self.punch_signals(eventid, dish, histEntry,
+					dishData['down_signal'], dishData['up_signal'], arrayedSignals, signalHist, signalOut)
 				
 				if (dishData['azimuth_angle'] is not None and
 						dishData['elevation_angle'] is not None and 
@@ -315,28 +330,36 @@ class DBSync(object):
 					targetOut.append(newTarget)
 					targetHist[spacecraft.id] = newTarget
 	
-	def collect_signals(self, dataDish, isUp):
-		upDown = 'up' if isUp else 'down'
-		eventId = (DataSignal.select(DataSignal.eventid).where(
-				(DataSignal.datadishid == dataDish.id) & (DataSignal.updown == upDown)
-			).order_by(DataSignal.eventid.desc()).limit(1).scalar())
+	def collect_signals(self, dataDish):
+		eventId = (DataSignal.select(DataSignal.eventid).where(DataSignal.datadishid == dataDish.id)
+			.order_by(DataSignal.eventid.desc()).limit(1).scalar())
 		results = {}
 		if eventId:
+			prevEntry = None
 			for entry in (DataSignal.select().where(
-					(DataSignal.datadishid == dataDish.id) &
-					(DataSignal.updown == upDown) &
-					(DataSignal.eventid == eventId)
+						(DataSignal.datadishid == dataDish.id) & (DataSignal.eventid == eventId)
+					).order_by(
+						DataSignal.updown.asc(),
+						DataSignal.configspacecraftid.asc(),
+						DataSignal.flags.asc(),
+						DataSignal.id.asc()
 					)):
-				key = str(entry.configspacecraftid) + ':' + entry.flags.lower()
+				if (not prevEntry or prevEntry.configspacecraftid != entry.configspacecraftid or
+						prevEntry.updown != entry.updown):
+					seq = 1
+				else:
+					seq = seq + 1
+				key = (str(entry.configspacecraftid) + ('u' if entry.updown == 'up' else 'd') +
+					':' + str(seq) + ('s' if 'slave' in entry.flags.lower() else ''))
 				results[key] = entry
+				prevEntry = entry
 		return results
 	
-	def punch_signals(self, eventid, dish, dataDish, signals, isUp, signalHist, signalOut):
-		ourSignals = {}
-		isChanged = False
-		
+	def collect_parsed_signals(self, signals, isUp, arrayedSignals, ourSignals):
+		# collect and identify the signals so we can match them up to previous signal reports
+		signalList = []
 		for signalData in signals:
-			# identify the target spaceship
+			# identify the target spacecraft
 			if not signalData['debug']:
 				continue
 			spacecraft = self.get_spacecraft(signalData)
@@ -347,29 +370,64 @@ class DBSync(object):
 			
 			#collect signal flags
 			flags = set()
-			if signalData['data_rate'] == 0.0:
-				if state.encoding == 'UNC':
-					flags.add('unc') 
-				elif 'Array' in dataDish.flags:
+			flagsort = 0
+			if arrayedSignals and spacecraft.id in arrayedSignals:
+				if arrayedSignals[spacecraft.id] == signalData:
+					flags.add('master')
+					flagsort = 1
+				else:
 					flags.add('slave')
+					flagsort = 2
 			
-			# punch the spacecraft with its last known protocol
+			# side effect - punch the spacecraft with its last known protocol
 			if spacecraft and state.encoding and state.encoding != 'UNC' and spacecraft.encoding != state.encoding:
 				spacecraft.encoding = state.encoding
 				spacecraft.save()
 			
-			# create a unique id for this signal
-			key = str(spacecraft.id) + ':' + ','.join(sorted(flags)).lower()
-			ourSignals[key] = {
+			signalList.append({
+				'isUp': isUp,
 				'spacecraft': spacecraft,
+				'spacecraft_id': spacecraft.id,
 				'state': state,
 				'flags': flags,
-				'data': signalData
-			}
+				'data': signalData,
+				'flagsort': flagsort,
+				'frequency': signalData['frequency']
+			})
+		
+		seq = 1
+		prevEntry = None
+		for entry in sorted(signalList, key=itemgetter('spacecraft_id', 'flagsort', 'frequency')):
+			if (not prevEntry or prevEntry['spacecraft_id'] != entry['spacecraft_id']):
+				seq = 1
+			else:
+				seq = seq + 1
 			
-			# if we don't have a corresponding entry in the history, or the entry is different,
-			# then we have a change
-			if not isChanged:
+			# create a unique id for this signal
+			key = (str(entry['spacecraft_id']) + ('u' if isUp else 'd') +
+				':' + str(seq) + ('s' if 'slave' in entry['flags'] else ''))
+			ourSignals[key] = entry
+	
+	def punch_signals(self, eventid, dish, dataDish, signalDown, signalUp, arrayedSignals, signalHist, signalOut):
+		
+		# collect the signals
+		ourSignals = {}
+		self.collect_parsed_signals(signalDown, False, arrayedSignals, ourSignals)
+		self.collect_parsed_signals(signalUp, True, None, ourSignals)
+		
+		# has anything changed in these signals?
+		isChanged = False
+		if len(ourSignals) != len(signalHist):
+			self.log.info('CHANGED: %d != %d' % (len(ourSignals), len(signalHist)))
+			isChanged = True
+		
+		if not isChanged:
+			for key in ourSignals:
+				entry = ourSignals[key]
+				state = entry['state']
+				
+				# if we don't have a corresponding entry in the history, or the entry is different,
+				# then we have a change
 				histEntry = signalHist.get(key, None)
 				if (not histEntry) or (histEntry.stateid != state.id):
 					if not histEntry:
@@ -377,16 +435,11 @@ class DBSync(object):
 					else:
 						self.log.info('CHANGED(%s on %d): %d -> %s[%d]' % (key, histEntry.configspacecraftid, histEntry.stateid, state.name, state.id))
 					isChanged = True
+					break
 		
-		# now, do we have any differences between what we have now and the previous iteration?
-		if not isChanged and (len(ourSignals) != len(signalHist)):
-			self.log.info('CHANGED: %d != %d' % (len(ourSignals), len(signalHist)))
-			isChanged = True
-		
+		# now process the signals, including any changes if necessary
 		if isChanged:
 			signalHist.clear()
-			pprint(signals)
-			pprint(ourSignals)
 		for key in ourSignals:
 			entry = ourSignals[key]
 			state = entry['state']
@@ -398,7 +451,7 @@ class DBSync(object):
 					eventid = eventid,
 					datadishid = dataDish.id,
 					configdishid = dish.id,
-					updown = 'up' if isUp else 'down',
+					updown = 'up' if entry['isUp'] else 'down',
 					stateid = state.id,
 					configspacecraftid = spacecraft.id,
 					flags = ','.join(entry['flags'])
@@ -408,7 +461,7 @@ class DBSync(object):
 				baseSignal = signalHist[key]
 			
 			# create a new signal report
-			if not(state.valuetype in ('none','idle')):
+			if not(state.valuetype in ('none','idle','idle+')):
 				signalData = entry['data']
 				newRecord = {
 					'eventid': eventid,
@@ -420,7 +473,6 @@ class DBSync(object):
 				signalOut.append(newRecord)
 	
 	def get_state(self, debug, isUp, signalType):
-		self.log.info('resolving debug %s, isUp = %s' % (debug, str(isUp)))
 		state = self.existingStates.get(debug, None)
 		if state:
 			return state
