@@ -73,10 +73,12 @@ class DBSync(object):
 						dishData = siteData['dishes'][dishName]
 						dish = existingDishes.get(dishName, None)
 						if dish:
-							if (dish.friendlyname != dishData['friendly_name'] or
+							if (dish.configsiteid != site.id or
+									dish.friendlyname != dishData['friendly_name'] or
 									dish.type != dishData['type']):
 								self.log.info("Updating config: dish %s" % dishName)
 								cmd = (ConfigDish.update(
+										configsiteid=site.id,
 										friendlyname=dishData['friendly_name'],
 										type=dishData['type'])
 									.where(ConfigDish.id == dish.id))
@@ -144,13 +146,25 @@ class DBSync(object):
 						self.spacecraftById[spacecraft.lastid] = spacecraft
 	
 	def punch_data(self, data):
-		time = data['time']
-		self.log.info('Received data for time %d' % ((int)(time/5000)))
+		this_time = data['time']
+		if not this_time:
+			self.log.warning('Ignoring response with no time')
+			pprint(data)
+			return False
+		self.log.info('Received data for time %d' % ((int)(this_time/5000)))
 		self.load_ref()
 		#self.log.info('ref loaded')
-		if time == self.last_time:
+		
+		is_backdated = None
+		if this_time == self.last_time:
+			self.log.info('Ignoring duplicate time %d' % this_time)
 			return False
-		self.last_time = time
+		elif this_time < self.last_time:
+			self.log.info('Handling backdated data (%d < %d)' % (this_time, self.last_time))
+			is_backdated = this_time
+		else:
+			self.last_time = this_time
+		
 		with self.db.atomic():
 			
 			# handle station data
@@ -165,40 +179,52 @@ class DBSync(object):
 			
 			# create the time event
 			with Using(self.db, [DataEvent]):
-				if DataEvent.select(DataEvent.time).where(DataEvent.time == time).exists():
+				if DataEvent.select(DataEvent.time).where(DataEvent.time == this_time).exists():
+					self.log.info('Ignoring previously logged time %d' % this_time)
 					return False
-				event = DataEvent.create(time=time)
+				event = DataEvent.create(time=this_time)
 			
 			# do everything else
-			self.punch_dishes(event.id, data['dishes'])
+			self.punch_dishes(event.id, is_backdated, data['dishes'])
 		return True
 	
 	def discover_arrays(self, dishes):
 		# go through the signals being specified by arrayed dishes and try to find the "primary" signal,
 		# if there is one (yet)
+		minorSignals = {}
 		majorSignals = {}
 		for dishName in dishes:
 			dishData = dishes[dishName]
 			if not('Array' in dishData['flags']):
 				continue
 			for signalData in dishData['down_signal']:
-				spacecraftId = signalData['spacecraft_id']
-				if spacecraftId in majorSignals:
-					continue
+				spacecraft = self.get_spacecraft(signalData)
 				state = self.get_state(signalData['debug'], False, signalData['type'])
 				if state.valuetype in ('data','carrier+'):
-					majorSignals[spacecraftId] = signalData
-		return majorSignals
+					majorSignals[spacecraft.id] = signalData
+				else:
+					minorSignals[spacecraft.id] = signalData
+		results = {}
+		for spacecraftId in majorSignals:
+			if spacecraftId in minorSignals:
+				results[spacecraftId] = majorSignals[spacecraftId]
+		return results
 	
-	def punch_dishes(self, eventid, dishes):
-		with Using(self.db, [ConfigSpacecraft, ConfigState, DataDish, DataDishPos, DataTarget, DataSignal, DataSignalDet]):
+	def punch_dishes(self, eventid, is_backdated, dishes):
+		with Using(self.db, [ConfigDish, ConfigSpacecraft, ConfigState, DataDish,
+				DataDishPos, DataTarget, DataSignal, DataSignalDet]):
 			arrayedSignals = self.discover_arrays(dishes)
 			dishOut = []
 			targetOut = []
 			signalOut = []
 			for dishName in dishes:
+				if not (dishName in self.existingDishes):
+					dish = ConfigDish.create(name=dishName)
+					self.existingDishes[dishName] = dish
+				else:
+					dish = self.existingDishes[dishName]
+				
 				dishData = dishes[dishName]
-				dish = self.existingDishes[dishName]
 				flags = ','.join(sorted(dishData['flags']))
 				created = dishData['created']
 				updated = dishData['updated']
@@ -224,12 +250,19 @@ class DBSync(object):
 				# find the previous version of this record
 				if not self.dishHist:
 					self.dishHist = {}
-				if dish.id in self.dishHist:
+				if is_backdated:
+					histEntry = (DataDish.select(DataDish)
+							.join(DataEvent, on=(DataDish.eventid==DataEvent.id))
+							.where((DataDish.configdishid==dish.id)&(DataEvent.time < is_backdated))
+							.order_by(DataEvent.time.desc())
+							.limit(1).first())
+				elif dish.id in self.dishHist:
 					histEntry = self.dishHist[dish.id]
 				else:
-					histEntry = (DataDish.select()
+					histEntry = (DataDish.select(DataDish)
+							.join(DataEvent, on=(DataDish.eventid==DataEvent.id))
 							.where(DataDish.configdishid==dish.id)
-							.order_by(DataDish.eventid.desc())
+							.order_by(DataEvent.time.desc())
 							.limit(1).first())
 					if histEntry:
 						self.dishHist[dish.id] = histEntry
@@ -256,8 +289,10 @@ class DBSync(object):
 					self.dishHist[dish.id] = histEntry
 					signalHist = {}
 					self.signalHist[dish.id] = signalHist
+				elif is_backdated:
+					signalHist = self.collect_signals(histEntry, is_backdated)
 				elif not dish.id in self.signalHist:
-					signalHist = self.collect_signals(histEntry)
+					signalHist = self.collect_signals(histEntry, None)
 					self.signalHist[dish.id] = signalHist
 				else:
 					signalHist = self.signalHist[dish.id]
@@ -265,11 +300,14 @@ class DBSync(object):
 				# grab target history, if we have any
 				if not self.targetHist:
 					self.targetHist = {}
-				if not(dish.id in self.targetHist):
-					self.targetHist[dish.id] = {}
-				targetHist = self.targetHist[dish.id]
+				if is_backdated:
+					targetHist = {}
+				else:
+					if not(dish.id in self.targetHist):
+						self.targetHist[dish.id] = {}
+					targetHist = self.targetHist[dish.id]
 				
-				self.punch_targets(eventid, dish, dishData['targets'], targetOut, targetHist)
+				self.punch_targets(eventid, is_backdated, dish, dishData['targets'], targetOut, targetHist)
 				self.punch_signals(eventid, dish, histEntry,
 					dishData['down_signal'], dishData['up_signal'], arrayedSignals, signalHist, signalOut)
 				
@@ -294,7 +332,7 @@ class DBSync(object):
 				cmd = DataSignalDet.insert_many(signalOut)
 				cmd.execute()
 	
-	def punch_targets(self, eventid, dish, targets, targetOut, targetHist):
+	def punch_targets(self, eventid, is_backdated, dish, targets, targetOut, targetHist):
 		for targetName in targets:
 			targetData = targets[targetName]
 			
@@ -306,12 +344,26 @@ class DBSync(object):
 			if targetData['down_range'] != -1 or targetData['up_range'] != -1 or targetData['rtlt'] != -1:
 				
 				# find the previous version of this record
-				if spacecraft.id in targetHist:
+				if is_backdated:
+					histEntry = (DataTarget.select(DataTarget)
+						.join(DataEvent, on=(DataTarget.eventid==DataEvent.id))
+						.where(
+							(DataTarget.configdishid==dish.id) &
+							(DataTarget.configspacecraftid==spacecraft.id) &
+							(DataEvent.time < is_backdated)
+						)
+						.order_by(DataEvent.time.desc())
+						.limit(1).dicts().first())
+					if histEntry:
+						targetHist[spacecraft.id] = histEntry
+				elif spacecraft.id in targetHist:
 					histEntry = targetHist[spacecraft.id]
 				else:
-					histEntry = (DataTarget.select().where(
-							(DataTarget.configdishid==dish.id) & (DataTarget.configspacecraftid==spacecraft.id)
-						).order_by(DataTarget.eventid.desc()).limit(1).dicts().first())
+					histEntry = (DataTarget.select(DataTarget)
+						.join(DataEvent, on=(DataTarget.eventid==DataEvent.id))
+						.where((DataTarget.configdishid==dish.id) & (DataTarget.configspacecraftid==spacecraft.id))
+						.order_by(DataEvent.time.desc())
+						.limit(1).dicts().first())
 					if histEntry:
 						targetHist[spacecraft.id] = histEntry
 				
@@ -330,9 +382,20 @@ class DBSync(object):
 					targetOut.append(newTarget)
 					targetHist[spacecraft.id] = newTarget
 	
-	def collect_signals(self, dataDish):
-		eventId = (DataSignal.select(DataSignal.eventid).where(DataSignal.datadishid == dataDish.id)
-			.order_by(DataSignal.eventid.desc()).limit(1).scalar())
+	def collect_signals(self, dataDish, is_backdated):
+		if is_backdated:
+			eventId = (DataSignal.select(DataSignal.eventid)
+				.join(DataEvent, on=(DataSignal.eventid==DataEvent.id))
+				.where((DataSignal.datadishid == dataDish.id) & (DataEvent.time < is_backdated))
+				.order_by(DataEvent.time.desc())
+				.limit(1).scalar())
+		else:
+			eventId = (DataSignal.select(DataSignal.eventid)
+				.join(DataEvent, on=(DataSignal.eventid==DataEvent.id))
+				.where(DataSignal.datadishid == dataDish.id)
+				.order_by(DataEvent.time.desc())
+				.limit(1).scalar())
+		
 		results = {}
 		if eventId:
 			prevEntry = None
@@ -341,12 +404,14 @@ class DBSync(object):
 					).order_by(
 						DataSignal.updown.asc(),
 						DataSignal.configspacecraftid.asc(),
-						DataSignal.flags.asc(),
+						DataSignal.flags.desc(),
 						DataSignal.id.asc()
 					)):
 				if (not prevEntry or prevEntry.configspacecraftid != entry.configspacecraftid or
 						prevEntry.updown != entry.updown):
 					seq = 1
+				elif prevEntry.configspacecraftid == entry.configspacecraftid and prevEntry.flags < entry.flags:
+					pass # slave connection
 				else:
 					seq = seq + 1
 				key = (str(entry.configspacecraftid) + ('u' if entry.updown == 'up' else 'd') +
@@ -400,6 +465,9 @@ class DBSync(object):
 		for entry in sorted(signalList, key=itemgetter('spacecraft_id', 'flagsort', 'frequency')):
 			if (not prevEntry or prevEntry['spacecraft_id'] != entry['spacecraft_id']):
 				seq = 1
+			elif (prevEntry['spacecraft_id'] == entry['spacecraft_id'] and
+					prevEntry['flagsort'] < entry['flagsort']):
+				pass # slave connection
 			else:
 				seq = seq + 1
 			
@@ -407,6 +475,7 @@ class DBSync(object):
 			key = (str(entry['spacecraft_id']) + ('u' if isUp else 'd') +
 				':' + str(seq) + ('s' if 'slave' in entry['flags'] else ''))
 			ourSignals[key] = entry
+			prevEntry = entry
 	
 	def punch_signals(self, eventid, dish, dataDish, signalDown, signalUp, arrayedSignals, signalHist, signalOut):
 		
@@ -432,6 +501,7 @@ class DBSync(object):
 				if (not histEntry) or (histEntry.stateid != state.id):
 					if not histEntry:
 						self.log.info('CHANGED: no entry %s' % key)
+						pprint(signalHist)
 					else:
 						self.log.info('CHANGED(%s on %d): %d -> %s[%d]' % (key, histEntry.configspacecraftid, histEntry.stateid, state.name, state.id))
 					isChanged = True

@@ -1,10 +1,12 @@
 # coding=utf-8
 from __future__ import division, absolute_import, print_function, unicode_literals
-import time
-import requests
-import logging
+import calendar
 import dateutil.parser
+import email.utils as eut
+import logging
 from lxml import etree
+import requests
+import time
 
 def to_decimal(value):
 	if value in ('', 'null', 'none', 'NaN'):
@@ -37,7 +39,9 @@ class DSNParser(object):
 		url = self.get_url()
 		self.log.info("Fetching %s" % url)
 		response = self.http_session.get(url)
-		self.log.info('response date: %s' % response.headers['date'])
+		responsetime = eut.parsedate(response.headers['date'])
+		responsesec = calendar.timegm(responsetime)
+		self.log.info('response date: %s -> %d (%d)' % (response.headers['date'], responsesec, int(responsesec / 5)))
 		doc = etree.fromstring(response.content)
 		dishList = doc.xpath('/dsn/dish')
 		dishes = {}
@@ -128,7 +132,9 @@ class DSNParser(object):
 		url = self.get_config_url()
 		self.log.info("Fetching config %s" % url)
 		response = self.http_session.get(url)
-		self.log.info('response date: %s' % response.headers['date'])
+		responsetime = eut.parsedate(response.headers['date'])
+		responsesec = calendar.timegm(responsetime)
+		self.log.info('response date: %s -> %d (%d)' % (response.headers['date'], responsesec, int(responsesec / 5)))
 		doc = etree.fromstring(response.content)
 		spacecraft = self.parse_spacecraft(doc.xpath('/config/spacecraftMap/spacecraft'))
 		sites = self.parse_sites(doc.xpath('/config/sites/site'))
@@ -161,6 +167,11 @@ def parse_debug(debug, isUp):
 	# all of this is mostly guesswork based on watching patterns and many google searches
 	flags = set()
 	if isUp:
+		# structure: <carrier> <encoding> <task>
+		#  <carrier> is ON or OFF depending on whether a carrier is being transmitted
+		#  <encoding> is 1 or 0 (occasionally -1) depending on whether data is being sent over the carrier
+		#  <task> is tasks being done, so far seen: TRK (ranging) or CAL (calibration)
+		
 		words = debug.split(' ')
 		if words[0] == 'ON':
 			flags.add('carrier')
@@ -179,6 +190,18 @@ def parse_debug(debug, isUp):
 			)
 		}
 	else:
+		# structure: <decoder1> <decoder2> <carrier> <encoding>
+		#  <decoder1> shows IDLE / OUT OF LOCK / WAIT FOR LOCK / IN LOCK
+		#    depending on whether a signal has been sucessflly decoded
+		#  <decoder2> is only used for TURBO encoding, locks after decoder1 locks
+		#  <carrier> is 1 or 0 (occasionally -1) depending on whether a carrier has been found
+		#  <encoding> is the signal encoding, so far seen: MCD2, MCD3, TURBO, UNC (unconnected)
+		#    MCD2=traditional standard, used on most satellites starting with Voyager
+		#      Convolutional / Viterbi code, k=7, r=1/2
+		#    MCD3=experimental, more difficult code for farther distances, deprecated
+		#      Convolutional / Viterbi code, k=15, r=1/6
+		#    TURBO=new standard for all satellites, significant improvement over MCD
+		
 		words = (debug.replace('OUT OF LOCK','OUT_OF_LOCK')
 			.replace('IN LOCK','IN_LOCK')
 			.replace('WAIT FOR LOCK','WAIT_FOR_LOCK')
@@ -186,10 +209,11 @@ def parse_debug(debug, isUp):
 		if words[2] == '1':
 			flags.add('carrier')
 		decoder1 = filter_value(words[0].replace('_', ' '),'')
+		decoder2 = filter_value(words[1].replace('_', ' '),'')
 		data = {
 			'flags': flags,
 			'decoder1': decoder1,
-			'decoder2': filter_value(words[1].replace('_', ' '),''),
+			'decoder2': decoder2,
 			'encoding': filter_value(words[3], ''),
 			'valueType': (
 				'data' if decoder1 == 'IN LOCK' and decoder2 in ('IN LOCK','OFF') else
