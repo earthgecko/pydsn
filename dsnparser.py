@@ -170,7 +170,7 @@ def parse_debug(debug, isUp):
 		# structure: <carrier> <encoding> <task>
 		#  <carrier> is ON or OFF depending on whether a carrier is being transmitted
 		#  <encoding> is 1 or 0 (occasionally -1) depending on whether data is being sent over the carrier
-		#  <task> is tasks being done, so far seen: TRK (ranging) or CAL (calibration)
+		#  <task> is tasks being done, so far seen: TRK (ranging), CAL (calibration), IDLE
 		
 		words = debug.split(' ')
 		if words[0] == 'ON':
@@ -194,7 +194,7 @@ def parse_debug(debug, isUp):
 		#  <decoder1> shows IDLE / OUT OF LOCK / WAIT FOR LOCK / IN LOCK
 		#    depending on whether a signal has been sucessflly decoded
 		#  <decoder2> is only used for TURBO encoding, locks after decoder1 locks
-		#  <carrier> is 1 or 0 (occasionally -1) depending on whether a carrier has been found
+		#  <carrier> is 1 or 0 (occasionally -1) depending on whether a carrier is heard
 		#  <encoding> is the signal encoding, so far seen: MCD2, MCD3, TURBO, UNC (unconnected)
 		#    MCD2=traditional standard, used on most satellites starting with Voyager
 		#      Convolutional / Viterbi code, k=7, r=1/2

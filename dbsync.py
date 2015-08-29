@@ -31,6 +31,7 @@ class DBSync(object):
 		self.targetHist = None
 		self.dishHist = None
 		self.signalHist = None
+		self.detailHist = None
 		self.last_time = 0
 	
 	def sync_config(self, sites, spacecrafts):
@@ -270,6 +271,8 @@ class DBSync(object):
 				# has there been any change to this record?
 				if not self.signalHist:
 					self.signalHist = {}
+				if not self.detailHist:
+					self.detailHist = {}
 				if (not histEntry or histEntry.createdtime != created_time or 
 						histEntry.updatedtime != updated_time or
 						histEntry.flags != flags or
@@ -289,13 +292,17 @@ class DBSync(object):
 					self.dishHist[dish.id] = histEntry
 					signalHist = {}
 					self.signalHist[dish.id] = signalHist
+					detailHist = {}
+					self.detailHist[dish.id] = detailHist
 				elif is_backdated:
-					signalHist = self.collect_signals(histEntry, is_backdated)
+					(signalHist, detailHist) = self.collect_signals(histEntry, is_backdated)
 				elif not dish.id in self.signalHist:
-					signalHist = self.collect_signals(histEntry, None)
+					(signalHist, detailHist) = self.collect_signals(histEntry, None)
 					self.signalHist[dish.id] = signalHist
+					self.detailHist[dish.id] = detailHist
 				else:
 					signalHist = self.signalHist[dish.id]
+					detailHist = self.detailHist[dish.id]
 				
 				# grab target history, if we have any
 				if not self.targetHist:
@@ -308,8 +315,8 @@ class DBSync(object):
 					targetHist = self.targetHist[dish.id]
 				
 				self.punch_targets(eventid, is_backdated, dish, dishData['targets'], targetOut, targetHist)
-				self.punch_signals(eventid, dish, histEntry,
-					dishData['down_signal'], dishData['up_signal'], arrayedSignals, signalHist, signalOut)
+				self.punch_signals(eventid, dish, histEntry, dishData['down_signal'], dishData['up_signal'],
+					arrayedSignals, signalHist, detailHist, signalOut)
 				
 				if (dishData['azimuth_angle'] is not None and
 						dishData['elevation_angle'] is not None and 
@@ -383,20 +390,16 @@ class DBSync(object):
 					targetHist[spacecraft.id] = newTarget
 	
 	def collect_signals(self, dataDish, is_backdated):
+		query = (DataSignal.select(DataSignal.eventid)
+				.join(DataEvent, on=(DataSignal.eventid==DataEvent.id)))
 		if is_backdated:
-			eventId = (DataSignal.select(DataSignal.eventid)
-				.join(DataEvent, on=(DataSignal.eventid==DataEvent.id))
-				.where((DataSignal.datadishid == dataDish.id) & (DataEvent.time < is_backdated))
-				.order_by(DataEvent.time.desc())
-				.limit(1).scalar())
+			query = query.where((DataSignal.datadishid == dataDish.id) & (DataEvent.time < is_backdated))
 		else:
-			eventId = (DataSignal.select(DataSignal.eventid)
-				.join(DataEvent, on=(DataSignal.eventid==DataEvent.id))
-				.where(DataSignal.datadishid == dataDish.id)
-				.order_by(DataEvent.time.desc())
-				.limit(1).scalar())
+			query = query.where(DataSignal.datadishid == dataDish.id)
+		eventId = query.order_by(DataEvent.time.desc()).limit(1).scalar()
 		
 		results = {}
+		details = {}
 		if eventId:
 			prevEntry = None
 			for entry in (DataSignal.select().where(
@@ -417,8 +420,17 @@ class DBSync(object):
 				key = (str(entry.configspacecraftid) + ('u' if entry.updown == 'up' else 'd') +
 					':' + str(seq) + ('s' if 'slave' in entry.flags.lower() else ''))
 				results[key] = entry
+				
+				query = (DataSignalDet.select(DataSignalDet.datarate, DataSignalDet.frequency, DataSignalDet.power)
+					.join(DataEvent, on=(DataSignalDet.eventid==DataEvent.id)))
+				if is_backdated:
+					query = query.where((DataSignalDet.datasignalid == entry.id) & (DataEvent.time < is_backdated))
+				else:
+					query = query.where(DataSignalDet.datasignalid == entry.id)
+				details[entry.id] = query.order_by(DataEvent.time.desc()).limit(1).dicts().first()
+				
 				prevEntry = entry
-		return results
+		return (results, details)
 	
 	def collect_parsed_signals(self, signals, isUp, arrayedSignals, ourSignals):
 		# collect and identify the signals so we can match them up to previous signal reports
@@ -477,7 +489,7 @@ class DBSync(object):
 			ourSignals[key] = entry
 			prevEntry = entry
 	
-	def punch_signals(self, eventid, dish, dataDish, signalDown, signalUp, arrayedSignals, signalHist, signalOut):
+	def punch_signals(self, eventid, dish, dataDish, signalDown, signalUp, arrayedSignals, signalHist, detailHist, signalOut):
 		
 		# collect the signals
 		ourSignals = {}
@@ -510,6 +522,7 @@ class DBSync(object):
 		# now process the signals, including any changes if necessary
 		if isChanged:
 			signalHist.clear()
+			detailHist.clear()
 		for key in ourSignals:
 			entry = ourSignals[key]
 			state = entry['state']
@@ -533,14 +546,20 @@ class DBSync(object):
 			# create a new signal report
 			if not(state.valuetype in ('none','idle','idle+')):
 				signalData = entry['data']
-				newRecord = {
-					'eventid': eventid,
-					'datasignalid': baseSignal.id,
-					'datarate': signalData['data_rate'],
-					'frequency': signalData['frequency'],
-					'power': signalData['power']
-				}
-				signalOut.append(newRecord)
+				lastSignalData = detailHist.get(baseSignal.id, None)
+				if (not lastSignalData or lastSignalData['datarate'] != signalData['data_rate'] or
+						lastSignalData['frequency'] != signalData['frequency'] or
+						lastSignalData['power'] != signalData['power']):
+					#self.log.info('signal %s: rate=%s, freq=%s, power=%s' % (key, signalData.get('data_rate',''), signalData.get('frequency',''), signalData.get('power','')))
+					newRecord = {
+						'eventid': eventid,
+						'datasignalid': baseSignal.id,
+						'datarate': signalData['data_rate'],
+						'frequency': signalData['frequency'],
+						'power': signalData['power']
+					}
+					detailHist[baseSignal.id] = newRecord
+					signalOut.append(newRecord)
 	
 	def get_state(self, debug, isUp, signalType):
 		state = self.existingStates.get(debug, None)
@@ -563,7 +582,7 @@ class DBSync(object):
 		return state
 	
 	def get_spacecraft(self, targetData):
-		targetName = targetData['spacecraft']
+		targetName = targetData['spacecraft'] or ''
 		targetId = targetData['spacecraft_id']
 		
 		# first look it up by name

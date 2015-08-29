@@ -76,7 +76,6 @@ class DataDish(BaseModel):
         db_table = 'dataDish'
 
 class DataDishPos(BaseModel):
-    id = PrimaryKeyField(db_column='ID')
     azimuthangle = FloatField(db_column='azimuthAngle')
     configdishid = IntegerField(db_column='configDishID') #ForeignKeyField(ConfigDish)
     elevationangle = FloatField(db_column='elevationAngle')
@@ -100,7 +99,6 @@ class DataSignal(BaseModel):
         db_table = 'dataSignal'
 
 class DataSignalDet(BaseModel):
-    id = PrimaryKeyField(db_column='ID')
     datarate = FloatField(db_column='dataRate', null=True)
     datasignalid = IntegerField(db_column='dataSignalID') #ForeignKeyField(DataSignal)
     eventid = IntegerField(db_column='eventID')
