@@ -417,8 +417,8 @@ class DBSync(object):
 					pass # slave connection
 				else:
 					seq = seq + 1
-				key = (str(entry.configspacecraftid) + ('u' if entry.updown == 'up' else 'd') +
-					':' + str(seq) + ('s' if 'slave' in entry.flags.lower() else ''))
+				key = (unicode(entry.configspacecraftid) + ('u' if entry.updown == 'up' else 'd') +
+					':' + unicode(seq) + ('s' if 'slave' in entry.flags.lower() else ''))
 				results[key] = entry
 				
 				query = (DataSignalDet.select(DataSignalDet.datarate, DataSignalDet.frequency, DataSignalDet.power)
@@ -484,8 +484,8 @@ class DBSync(object):
 				seq = seq + 1
 			
 			# create a unique id for this signal
-			key = (str(entry['spacecraft_id']) + ('u' if isUp else 'd') +
-				':' + str(seq) + ('s' if 'slave' in entry['flags'] else ''))
+			key = (unicode(entry['spacecraft_id']) + ('u' if isUp else 'd') +
+				':' + unicode(seq) + ('s' if 'slave' in entry['flags'] else ''))
 			ourSignals[key] = entry
 			prevEntry = entry
 	
