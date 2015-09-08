@@ -1,5 +1,6 @@
 # coding=utf-8
 from __future__ import division, absolute_import, print_function, unicode_literals
+import calendar
 import ConfigParser
 from dbmodel import *
 import paste.httpheaders
@@ -47,17 +48,30 @@ def get_database():
 def fetch_config(environ, start_response, query):
 	db = get_database()
 	format = query.get('format', '')
-	with Using(db, [ConfigSite, ConfigDish, ConfigSpacecraft]):
+	with Using(db, [ConfigSite, ConfigDish, ConfigSpacecraft, ExtDish, ExtSpacecraft]):
 		sites = []
 		for site in ConfigSite.select():
 			sites.append(site)
 		dishes = {}
-		for dish in ConfigDish.select():
+		for dish in (ConfigDish.select(
+					ConfigDish.configsiteid, ConfigDish.id, ConfigDish.name,
+					ConfigDish.friendlyname.alias('configdesc'), ConfigDish.type.alias('configtype'),
+					ExtDish.descr, ExtDish.friendlyname, ExtDish.latitude, ExtDish.longitude,
+					ExtDish.created)
+				.join(ExtDish, join_type=JOIN.LEFT_OUTER, on=(ConfigDish.name==ExtDish.name))
+				.dict()):
 			if not(dish.configsiteid in dishes):
-				dishes[dish.configsiteid] = []
-			dishes[dish.configsiteid].append(dish)
+				dishes[dish['configsiteid']] = []
+			dishes[dish['configsiteid']].append(dish)
 		crafts = []
-		for craft in ConfigSpacecraft.select().where(ConfigSpacecraft.flags==''):
+		for craft in (ConfigSpacecraft.select(
+					ConfigSpacecraft.name, ConfigSpacecraft.encoding,
+					ConfigSpacecraft.friendlyname.alias('configdesc'),
+					ExtSpacecraft.agency, ExtSpacecraft.constellation, ExtSpacecraft.friendlyname,
+					ExtSpacecraft.launch, ExtSpacecraft.location, ExtSpacecraft.status, ExtSpacecraft.url)
+				.join(ExtSpacecraft, join_type=JOIN.LEFT_OUTER, on=(ConfigSpacecraft.name==ExtSpacecraft.name))
+				.where(ConfigSpacecraft.flags=='')
+				.dict()):
 			crafts.append(craft)
 	
 	if format == 'sdxf2':
@@ -68,10 +82,15 @@ def fetch_config(environ, start_response, query):
 				myDishes = dishes[site.id]
 				for dish in myDishes:
 					dishesOut.append({
-						'friendlyName': dish.friendlyname,
-						'name': dish.name,
-						'type': dish.type,
-						'ID': dish.id
+						'ID': dish['id'],
+						'name': dish['name'],
+						'configFriendly': dish['configdesc'],
+						'configType': dish['type'],
+						'extDescr': dish['descr'],
+						'extFriendly': dish['friendlyname'],
+						'latitude': dish['latitude'],
+						'longitude': dish['longitude'],
+						'created': dish['created']
 					})
 			sitesOut.append({
 				'friendlyName': site.friendlyname,
@@ -84,14 +103,21 @@ def fetch_config(environ, start_response, query):
 		craftOut = []
 		for craft in crafts:
 			craftOut.append({
-				'encoding': craft.encoding,
-				'friendlyName': craft.friendlyname,
-				'name': craft.name
+				'name': craft['name'],
+				'encoding': craft['encoding'],
+				'configFriendly': craft['configdesc'],
+				'agency': craft['agency'],
+				'constellation': craft['constellation'],
+				'extFriendly': craft['friendlyname'],
+				'launch': calendar.timegm(craft['launch'].utctimetuple()) if craft['launch'] else None,
+				'location': craft['location'],
+				'status': craft['status'],
+				'url': craft['url']
 			})
 		configOut = sdxf2.encode({'sites':sitesOut,'spacecraft':craftOut})
 		start_response('200 Ok', {'Content-Type': 'application/x-sdxf2'})
 		return [configOut]
-
+	
 	else: # default to XML
 		sitesOut = E.sites()
 		for site in sites:
@@ -107,17 +133,29 @@ def fetch_config(environ, start_response, query):
 				myDishes = dishes[site.id]
 				for dish in myDishes:
 					siteOut.append(E.dish({
-						'friendlyName': dish.friendlyname,
-						'name': dish.name,
-						'type': dish.type,
-						'ID': dish.id
+						'ID': dish['id'],
+						'name': dish['name'],
+						'configFriendly': dish['configdesc'],
+						'configType': dish['type'],
+						'extDescr': dish['descr'],
+						'extFriendly': dish['friendlyname'],
+						'latitude': dish['latitude'],
+						'longitude': dish['longitude'],
+						'created': dish['created']
 					}))
 		craftOut = E.spacecraftMap()
 		for craft in crafts:
 			craftOut.append(E.spacecraft({
-				'encoding': craft.encoding,
-				'friendlyName': craft.friendlyname,
-				'name': craft.name
+				'name': craft['name'],
+				'encoding': craft['encoding'],
+				'configFriendly': craft['configdesc'],
+				'agency': craft['agency'],
+				'constellation': craft['constellation'],
+				'extFriendly': craft['friendlyname'],
+				'launch': calendar.timegm(craft['launch'].utctimetuple()) if craft['launch'] else None,
+				'location': craft['location'],
+				'status': craft['status'],
+				'url': craft['url']
 			}))
 		configOut = E.config(sitesOut, configOut).toString().encode('utf-8')
 		start_response('200 Ok', {'Content-Type': 'text/xml; charset=utf-8'})
@@ -140,7 +178,7 @@ def fetch_status(environ, start_response, query):
 		for dish in ConfigDish.select():
 			configDishes[dish.id] = dish
 		configCrafts = {}
-		for craft in ConfigSpacecraft.select().where(ConfigSpacecraft.flags==''):
+		for craft in ConfigSpacecraft.select():
 			configCrafts[craft.id] = craft
 		configstates = {}
 		for state in ConfigState.select():
@@ -180,7 +218,8 @@ def fetch_status(environ, start_response, query):
 				
 				for signal in datasignals[dish.configdishid]:
 					craft = configCrafts.get(signal.configspacecraftid, None)
-					if craft:
+					state = configStates.get(signal.stateid, None)
+					if craft and state:
 						signalOut.append({
 							'craft': craft.name,
 							'flags': pick_if_one(signal.flags.split(',')),
@@ -228,13 +267,15 @@ def fetch_status(environ, start_response, query):
 					'class': state.valuetype
 				})
 		
-		statusOut = sdxf2.encode({'dishes':dishOut, 'state':stateOut})
+		with Using(db, [DataEvent]):
+			maxTime = DataEvent.select(DataEvent.time).where(DataEvent.id == thisEvent).limit(1).scalar()
+		statusOut = sdxf2.encode({'time':maxTime, 'dishes':dishOut, 'state':stateOut})
 		start_response('200 Ok', {
 			'Content-type': 'application/x-sdxf2',
 			'ETag': 'W/"' + unicode(thisEvent) + '"'
 		})
 		return [statusOut]
-
+	
 	else: # default to XML
 		dishesOut = E.dishes()
 		for dish in dishes:
@@ -251,7 +292,8 @@ def fetch_status(environ, start_response, query):
 				
 				for signal in datasignals[dish.configdishid]:
 					craft = configCrafts.get(signal.configspacecraftid, None)
-					if craft:
+					state = configStates.get(signal.stateid, None)
+					if craft and state:
 						dishOut.append(E.signal({
 							'craft': craft.name,
 							'flags': signal.flags if state.flags != '' else None,
@@ -291,7 +333,9 @@ def fetch_status(environ, start_response, query):
 					'class': state.valuetype
 				}))
 		
-		stateOut = E.state(dishesOut, stateOut).toString().encode('utf-8')
+		with Using(db, [DataEvent]):
+			maxTime = DataEvent.select(DataEvent.time).where(DataEvent.id == thisEvent).limit(1).scalar()
+		stateOut = E.status({'time':maxTime}, dishesOut, stateOut).toString().encode('utf-8')
 		start_response('200 Ok', {
 			'Content-type': 'text/xml',
 			'ETag': 'W/"' + unicode(thisEvent) + '"'

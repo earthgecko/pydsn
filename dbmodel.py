@@ -10,8 +10,8 @@ class BaseModel(Model):
 class ConfigSite(BaseModel):
     id = PrimaryKeyField(db_column='ID')
     friendlyname = TextField(db_column='friendlyName')
-    latitude = FloatField()
-    longitude = FloatField()
+    latitude = DoubleField()
+    longitude = DoubleField()
     name = CharField(unique=True)
     timezoneoffset = BigIntegerField(db_column='timeZoneOffset', null=True)
 
@@ -99,11 +99,11 @@ class DataSignal(BaseModel):
         db_table = 'dataSignal'
 
 class DataSignalDet(BaseModel):
-    datarate = FloatField(db_column='dataRate', null=True)
+    datarate = DoubleField(db_column='dataRate', null=True)
     datasignalid = IntegerField(db_column='dataSignalID') #ForeignKeyField(DataSignal)
     eventid = IntegerField(db_column='eventID')
-    frequency = FloatField(null=True)
-    power = FloatField(null=True)
+    frequency = DoubleField(null=True)
+    power = DoubleField(null=True)
 
     class Meta:
         db_table = 'dataSignalDet'
@@ -112,10 +112,37 @@ class DataTarget(BaseModel):
     id = PrimaryKeyField(db_column='ID')
     configdishid = IntegerField(db_column='configDishID') #ForeignKeyField(ConfigDish)
     configspacecraftid = IntegerField(db_column='configSpacecraftID') #ForeignKeyField(ConfigSpacecraft)
-    downlegrange = FloatField(db_column='downlegRange')
+    downlegrange = DoubleField(db_column='downlegRange')
     eventid = IntegerField(db_column='eventID')
-    rtlt = FloatField()
-    uplegrange = FloatField(db_column='uplegRange')
+    rtlt = DoubleField()
+    uplegrange = DoubleField(db_column='uplegRange')
 
     class Meta:
         db_table = 'dataTarget'
+
+class ExtDish(BaseModel):
+    id = PrimaryKeyField(db_column='ID')
+    descr = TextField(null=True)
+    friendlyname = CharField(db_column='friendlyName', null=True)
+    latitude = DoubleField(null=True)
+    longitude = DoubleField(null=True)
+    name = CharField(unique=True)
+    site = CharField()
+    created = IntegerField(null=True)
+
+    class Meta:
+        db_table = 'extDish'
+
+class ExtSpacecraft(BaseModel):
+    id = PrimaryKeyField(db_column='ID')
+    agency = CharField(null=True)
+    constellation = CharField(unique=True)
+    friendlyname = TextField(db_column='friendlyName', null=True)
+    launch = DateTimeField(null=True)
+    location = CharField(null=True)
+    name = CharField(unique=True)
+    status = CharField()
+    url = CharField(null=True)
+
+    class Meta:
+        db_table = 'extSpacecraft'
