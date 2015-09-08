@@ -2,6 +2,7 @@
 from __future__ import division, absolute_import, print_function, unicode_literals
 import ConfigParser
 from dbmodel import *
+import paste.httpheaders
 from lxml.builder import E
 import sdxf2
 import urlparse
@@ -9,7 +10,7 @@ import urlparse
 def application(environ, start_response):
 	if environ['REQUEST_METHOD'] != 'GET':
 		start_response('405 Method Not Allowed', {'Content-Length':0})
-		return ('')
+		return ['']
 	
 	query = urlparse.parse_qs(environ.get('QUERY_STRING',''))
 	file = query.get('file', '')
@@ -19,9 +20,17 @@ def application(environ, start_response):
 		return fetch_status(environ, start_response, query)
 	else:
 		start_response('400 Bad Request', {'Content-Length':0})
-		return ('')
-	#format = query.get('format', '')
-	#etag = environ.get('ETag', '')
+		return ['']
+
+def pick_if_one(arr):
+	if not(arr and isinstance(arr, (list, tuple))) or len(arr) > 1:
+		return arr
+	elif len(arr) == 0:
+		return None
+	val = arr[0]
+	if val == '':
+		return None
+	return val
 
 def get_database():
 	config = ConfigParser.ConfigParser()
@@ -61,7 +70,8 @@ def fetch_config(environ, start_response, query):
 					dishesOut.append({
 						'friendlyName': dish.friendlyname,
 						'name': dish.name,
-						'type': dish.type
+						'type': dish.type,
+						'ID': dish.id
 					})
 			sitesOut.append({
 				'friendlyName': site.friendlyname,
@@ -99,7 +109,8 @@ def fetch_config(environ, start_response, query):
 					siteOut.append(E.dish({
 						'friendlyName': dish.friendlyname,
 						'name': dish.name,
-						'type': dish.type
+						'type': dish.type,
+						'ID': dish.id
 					}))
 		craftOut = E.spacecraftMap()
 		for craft in crafts:
@@ -114,6 +125,12 @@ def fetch_config(environ, start_response, query):
 
 def fetch_status(environ, start_response, query):
 	db = get_database()
+	
+	etag = httpheaders.get_header('If-None-Match')(environ)
+	if etag and get_status_etag(db) == etag:
+		start_response('305 Not Modified', {'Content-Length':0})
+		return ['']
+	
 	format = query.get('format', '')
 	with Using(db, [ConfigSite, ConfigDish, ConfigSpacecraft, ConfigState, DataDish, DataEvent, DataSignal]):
 		configSites = {}
@@ -144,7 +161,7 @@ def fetch_status(environ, start_response, query):
 						.join(DataEvent, on=(DataSignal.eventid==DataEvent.id))
 						.where(DataSignal.configdishid == dish.id)
 						.order_by(DataEvent.time.desc())
-						.limit(1).first().scalar())
+						.limit(1).scalar())
 				for signal in (DataSignal.select()
 						.where(DataSignal.configdishid==dish.id & DataSignal.eventid==signalEvent)):
 					datasignals[dish.configdishid].push(signal)
@@ -166,7 +183,7 @@ def fetch_status(environ, start_response, query):
 					if craft:
 						signalOut.append({
 							'craft': craft.name,
-							'flags': signal.flags.split(','),
+							'flags': pick_if_one(signal.flags.split(',')),
 							'state': signal.stateid,
 							'upDown': signal.updown
 						})
@@ -190,9 +207,8 @@ def fetch_status(environ, start_response, query):
 						targetOut.append({'craft': craft.name})
 				
 				dishOut.append({
-					'ID': dish.id,
 					'name': configDish.name,
-					'flags': dish.flags.split(','),
+					'flags': pick_if_one(dish.flags.split(',')),
 					'signals': signalOut,
 					'targets': targetOut
 				})
@@ -207,7 +223,7 @@ def fetch_status(environ, start_response, query):
 					'decoder1': state.decoder1,
 					'decoder2': state.decoder2,
 					'encoding': state.encoding,
-					'flags': state.flags.split(','),
+					'flags': pick_if_one(state.flags.split(',')),
 					'task': state.task,
 					'class': state.valuetype
 				})
@@ -228,7 +244,6 @@ def fetch_status(environ, start_response, query):
 					thisEvent = dish.eventid
 				
 				dishOut = E.dish({
-					'ID': dish.id,
 					'name': configDish.name,
 					'flags': dish.flags if state.flags != '' else None
 				})
@@ -282,3 +297,16 @@ def fetch_status(environ, start_response, query):
 			'ETag': 'W/"' + unicode(thisEvent) + '"'
 		})
 		return [result]
+
+def get_status_etag(db):
+	with Using(db, [DataDish, DataEvent, DataSignal]):
+		DishEvent = DataEvent.alias()
+		SignalEvent = DataEvent.alias()
+		maxTime = (DataDish.select(fn.greatest(fn.max(DishEvent.time), fn.max(SignalEvent.time)))
+			.join(DishEvent, on=(DataDish.eventid==DishEvent.id))
+			.join(DataSignal, on=(DataDish.id==DataSignal.configdishid))
+			.join(SignalEvent, on=(DataSignal.eventid==SignalEvent.id))
+			.scalar())
+		maxId = DataEvent.select(DataEvent.id).where(DataEvent.time == maxTime).limit(1).scalar()
+	ourEtag = 'W/"' + unicode(maxId) + '"'
+	return ourEtag
