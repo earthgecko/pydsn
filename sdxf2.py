@@ -132,7 +132,7 @@ class Sdxf2Generator(object):
 	def int2binary(self, val, minLen = 1):
 		remain = val
 		enc = bytearray()
-		while len(enc)<minLen and ((remain != 0 and remain != -1) or ((enc[-1]&0x080!=0) != (remain < 0))):
+		while len(enc)<minLen or ((remain != 0 and remain != -1) or ((enc[-1]&0x080!=0) != (remain < 0))):
 			enc.append(remain & 0x0ff)
 			remain >>= 8
 		enc.reverse()
@@ -254,7 +254,7 @@ class Sdxf2Parser(object):
 		for idx in range(0, len(src)):
 			if idx == 4:
 				result = long(result)
-			result = ((result << 8) & 0xf00) | src[idx]
+			result = ((result << 8) & ~0x0ff) | src[idx]
 		return result
 	
 	def enterChunk(self):
@@ -319,12 +319,14 @@ class Sdxf2TextGenerator(object):
 		self.generator = Sdxf2Generator()
 		self.content = self.generator.content
 	
-	def from_dict(self, src):
+	def from_dict(self, *args):
 		keys = {}
 		count = { 'val': 1 }
-		self.gather_keys(src, keys, count)
+		for src in args:
+			self.gather_keys(src, keys, count)
 		self.dump_keys(keys)
-		self.dump_dict(src, keys)
+		for src in args:
+			self.dump_dict(src, keys)
 	
 	def gather_keys(self, src, keys, count, name = None):
 		for key in src:
@@ -438,6 +440,15 @@ class Sdxf2TextParser(object):
 			here = parser.next()
 		return result
 
+def encode(*src):
+	gen = Sdxf2TextGenerator()
+	gen.from_dict(*src)
+	return gen.content
+
+def decode(src):
+	parser = Sdxf2TextParser(src)
+	return parser.to_dict()
+
 if __name__ == '__main__':
 	from pprint import pprint
 	#test = utfOut(0xfff)
@@ -446,7 +457,7 @@ if __name__ == '__main__':
 	#pprint(utfIn(test))
 	test_in = {
 		5: 'one',
-		'two': ('hi', 'you', 12),
+		'two': ('hi', 'you', -5563701247),
 		'three': { 'my': 14.2, 'you': 'hi there' },
 		'four': None
 	}
