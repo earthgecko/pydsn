@@ -7,6 +7,7 @@ class BaseModel(Model):
     class Meta:
         database = database
 
+
 class ConfigSite(BaseModel):
     id = PrimaryKeyField(db_column='ID')
     friendlyname = TextField(db_column='friendlyName')
@@ -18,15 +19,17 @@ class ConfigSite(BaseModel):
     class Meta:
         db_table = 'configSite'
 
+
 class ConfigDish(BaseModel):
     id = PrimaryKeyField(db_column='ID')
-    configsiteid = IntegerField(db_column='configSiteID') #ForeignKeyField(ConfigSite)
+    configsiteid = IntegerField(db_column='configSiteID') # ForeignKeyField(ConfigSite)
     friendlyname = TextField(db_column='friendlyName')
     name = CharField()
     type = CharField()
 
     class Meta:
         db_table = 'configDish'
+
 
 class ConfigSpacecraft(BaseModel):
     encoding = CharField(null=True)
@@ -38,6 +41,7 @@ class ConfigSpacecraft(BaseModel):
 
     class Meta:
         db_table = 'configSpacecraft'
+
 
 class ConfigState(BaseModel):
     decoder1 = CharField(null=True)
@@ -54,6 +58,7 @@ class ConfigState(BaseModel):
     class Meta:
         db_table = 'configState'
 
+
 class DataEvent(BaseModel):
     id = PrimaryKeyField(db_column='ID')
     time = BigIntegerField()
@@ -61,9 +66,10 @@ class DataEvent(BaseModel):
     class Meta:
         db_table = 'dataEvent'
 
+
 class DataDish(BaseModel):
     id = PrimaryKeyField(db_column='ID')
-    configdishid = IntegerField(db_column='configDishID') #ForeignKeyField(ConfigDish)
+    configdishid = IntegerField(db_column='configDishID')  # ForeignKeyField(ConfigDish)
     createdtime = BigIntegerField(db_column='createdTime')
     eventid = IntegerField(db_column='eventID')
     flags = CharField()
@@ -75,9 +81,10 @@ class DataDish(BaseModel):
     class Meta:
         db_table = 'dataDish'
 
+
 class DataDishPos(BaseModel):
     azimuthangle = FloatField(db_column='azimuthAngle')
-    configdishid = IntegerField(db_column='configDishID') #ForeignKeyField(ConfigDish)
+    configdishid = IntegerField(db_column='configDishID')  # ForeignKeyField(ConfigDish)
     elevationangle = FloatField(db_column='elevationAngle')
     eventid = IntegerField(db_column='eventID')
     windspeed = FloatField(db_column='windSpeed')
@@ -85,22 +92,24 @@ class DataDishPos(BaseModel):
     class Meta:
         db_table = 'dataDishPos'
 
+
 class DataSignal(BaseModel):
     id = PrimaryKeyField(db_column='ID')
-    configdishid = IntegerField(db_column='configDishID') #ForeignKeyField(ConfigDish)
-    configspacecraftid = IntegerField(db_column='configSpacecraftID') #ForeignKeyField(ConfigSpacecraft)
-    datadishid = IntegerField(db_column='dataDishID') #ForeignKeyField(DataDish)
+    configdishid = IntegerField(db_column='configDishID')  # ForeignKeyField(ConfigDish)
+    configspacecraftid = IntegerField(db_column='configSpacecraftID')  # ForeignKeyField(ConfigSpacecraft)
+    datadishid = IntegerField(db_column='dataDishID')  # ForeignKeyField(DataDish)
     eventid = IntegerField(db_column='eventID')
     flags = CharField()
-    stateid = IntegerField(db_column='stateID') #ForeignKeyField(ConfigState)
+    stateid = IntegerField(db_column='stateID')  # ForeignKeyField(ConfigState)
     updown = CharField(db_column='upDown')
 
     class Meta:
         db_table = 'dataSignal'
 
+
 class DataSignalDet(BaseModel):
     datarate = DoubleField(db_column='dataRate', null=True)
-    datasignalid = IntegerField(db_column='dataSignalID') #ForeignKeyField(DataSignal)
+    datasignalid = IntegerField(db_column='dataSignalID')  # ForeignKeyField(DataSignal)
     eventid = IntegerField(db_column='eventID')
     frequency = DoubleField(null=True)
     power = DoubleField(null=True)
@@ -108,10 +117,11 @@ class DataSignalDet(BaseModel):
     class Meta:
         db_table = 'dataSignalDet'
 
+
 class DataTarget(BaseModel):
     id = PrimaryKeyField(db_column='ID')
-    configdishid = IntegerField(db_column='configDishID') #ForeignKeyField(ConfigDish)
-    configspacecraftid = IntegerField(db_column='configSpacecraftID') #ForeignKeyField(ConfigSpacecraft)
+    configdishid = IntegerField(db_column='configDishID')  # ForeignKeyField(ConfigDish)
+    configspacecraftid = IntegerField(db_column='configSpacecraftID')  # ForeignKeyField(ConfigSpacecraft)
     downlegrange = DoubleField(db_column='downlegRange')
     eventid = IntegerField(db_column='eventID')
     rtlt = DoubleField()
@@ -119,6 +129,7 @@ class DataTarget(BaseModel):
 
     class Meta:
         db_table = 'dataTarget'
+
 
 class ExtDish(BaseModel):
     id = PrimaryKeyField(db_column='ID')
@@ -132,6 +143,7 @@ class ExtDish(BaseModel):
 
     class Meta:
         db_table = 'extDish'
+
 
 class ExtSpacecraft(BaseModel):
     id = PrimaryKeyField(db_column='ID')
