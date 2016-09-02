@@ -8,6 +8,19 @@ import pickle
 import tweepy
 from tweepy.error import TweepError
 from dsn import DSN
+# import mock
+# import unittest
+
+logfile = '/tmp/pydsn.log'
+# logging.basicConfig(filename=logfile, level=logging.INFO)
+logging.basicConfig(
+    filename=logfile,
+    filemode='a',
+    level=logging.INFO,
+    format="%(asctime)s :: %(process)s :: %(message)s",
+    datefmt='%Y-%m-%d %H:%M:%S')
+
+TESTING = True
 
 spacecraft_twitter_names = {
     'MSL': 'MarsCuriosity',
@@ -74,14 +87,26 @@ def combine_state(signals):
 
 class TweetDSN(object):
     def __init__(self):
+        self.stdout_path = logfile
+        self.stderr_path = logfile
         self.log = logging.getLogger(__name__)
         self.config = ConfigParser.ConfigParser()
-        self.config.read('dsntweet.conf')
-        auth = tweepy.OAuthHandler(self.config.get('twitter', 'api_key'),
-                                   self.config.get('twitter', 'api_secret'))
-        auth.set_access_token(self.config.get('twitter', 'access_key'),
-                              self.config.get('twitter', 'access_secret'))
-        self.twitter = tweepy.API(auth)
+        if not TESTING:
+            self.config.read('dsntweet.conf')
+            auth = tweepy.OAuthHandler(self.config.get('twitter', 'api_key'),
+                                       self.config.get('twitter', 'api_secret'))
+            auth.set_access_token(self.config.get('twitter', 'access_key'),
+                                  self.config.get('twitter', 'access_secret'))
+            self.twitter = tweepy.API(auth)
+#        else:
+            # cool ... https://www.toptal.com/python/an-introduction-to-mocking-in-python
+#            @mock.patch.object(tweepy.API, 'update_status')
+#            def test_post_to_twitter(self, mock_update_status):
+#                auth = 'fake auth token'
+#                auth.post_tweet("Hello World!")
+#                mock_update_status.assert_called_with("Hello World!")
+#            self.twitter = test_post_to_twitter("Hello World!")
+
         self.pending_updates = {}
         self.state = {}
         self.last_updates = {}
@@ -89,9 +114,13 @@ class TweetDSN(object):
 
     def data_callback(self, _old, new):
         signals = defaultdict(list)
+        self.log.info('%s' % str(new))
         for antenna, status in new.iteritems():
             # Spacecraft can have more than one downlink signal, but antennas can also be
             # receiving from more than one spacecraft
+            # self.log.info('antenna - %s' % str(antenna))
+            # self.log.info('status - %s' % str(status))
+
             for signal in status['down_signal']:
                 signal['antenna'] = antenna
                 signals[signal['spacecraft']].append(signal)
@@ -178,11 +207,15 @@ class TweetDSN(object):
             if spacecraft not in self.last_updates:
                 self.last_updates[spacecraft] = deque(maxlen=25)
             self.last_updates[spacecraft].append((datetime.now(), state))
-            try:
-                self.twitter.update_status(status=message, lat=lat, long=lon)
-            except TweepError:
-                self.log.exception("Tweet error")
-            print(message)
+            if not TESTING:
+                try:
+                    self.twitter.update_status(status=message, lat=lat, long=lon)
+                except TweepError:
+                    self.log.exception("Tweet error")
+                # print(message)
+            else:
+                print(message)
+                self.log.info('tweet :: %s' % message)
 
     def should_tweet(self, spacecraft, state):
         """ Last check to decide if we should tweet this update. Don't tweet about the same
@@ -206,7 +239,12 @@ class TweetDSN(object):
                             "friendly_name": antenna_info['friendly_name']}
 
     def run(self):
-        logging.basicConfig(level=logging.INFO)
+        # logging.basicConfig(level=logging.INFO)
+        logging.basicConfig(
+            filename=logfile,
+            level=logging.INFO,
+            format="%(asctime)s :: %(process)s :: %(message)s",
+            datefmt='%Y-%m-%d %H:%M:%S')
         self.dsn = DSN()
         self.dsn.data_callback = self.data_callback
 

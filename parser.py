@@ -6,17 +6,60 @@ import requests
 import logging
 import dateutil.parser
 from lxml import etree
+import calendar
+import email.utils as eut
+import traceback
+import os
+import stat
+
+logfile = '/tmp/pydsn.log'
+app = 'parser'
+# logging.basicConfig(filename=logfile, level=logging.INFO)
+logging.basicConfig(
+    filename=logfile,
+    filemode='a',
+    level=logging.INFO,
+    format="%(asctime)s :: %(process)s :: %(message)s",
+    datefmt='%Y-%m-%d %H:%M:%S')
+
+dsn_data_file = '/tmp/dsn.data.xml'
+dsn_config_file = '/tmp/dsn.config.xml'
 
 
 def to_decimal(value):
-    if value == '' or value == 'null':
+    # if value == '' or value == 'null':
+    if value in ('', 'null', 'none', 'NaN'):
         return None
     return Decimal(value)
+
+
+def to_float(value):
+    if value in ('', 'null', 'none', 'NaN'):
+        return None
+    return float(value)
+
+
+def to_int(value):
+    if value in ('', 'null', 'none', 'NaN'):
+        return None
+    return int(value)
+
+
+def filter_value(value, exclusions):
+    if value in exclusions:
+        return None
+    return value
+
+
+def file_age_in_seconds(pathname):
+    return int(time.time() - os.stat(pathname)[stat.ST_MTIME])
 
 
 class DSNParser(object):
 
     def __init__(self):
+        self.stdout_path = logfile
+        self.stderr_path = logfile
         self.log = logging.getLogger(__name__)
         self.http_session = requests.Session()
 
@@ -27,16 +70,56 @@ class DSNParser(object):
         return "http://eyes.nasa.gov/dsn/config.xml"
 
     def fetch_data(self):
-        url = self.get_url()
-        self.log.debug("Fetching %s" % url)
-        response = self.http_session.get(url)
-        doc = etree.fromstring(response.content)
+        get_data = True
+        # If a local dsn_data_file exists that is less than 10 seconds old use
+        # that data
+        if os.path.isfile(dsn_data_file):
+            file_age = file_age_in_seconds(dsn_data_file)
+            if file_age < 10:
+                get_data = False
+                self.log.info('%s :: using local data xml file - %s old' % (app, str(file_age)))
+
+        if get_data:
+            url = self.get_url()
+            self.log.info("fetching data from - %s" % url)
+            try:
+                response = self.http_session.get(url)
+                responsetime = eut.parsedate(response.headers['date'])
+                responsesec = calendar.timegm(responsetime)
+                self.log.info('response date: %s -> %d (%d)' % (response.headers['date'], responsesec, int(responsesec / 5)))
+            except:
+                self.log.info('%s' % (traceback.format_exc()))
+                self.log.info('error :: failed to get URL - %s' % (str(url)))
+                response = 'None'
+                return None
+
+            # @added 20160902 - Task #1616: Merge russss and odysseus654
+            # Write the content out to file so that it can be used by dbsync
+            try:
+                with open('/tmp/dsn.xml', 'w') as fh:
+                    fh.write(response.content)
+            except:
+                self.log.info('error :: failed to write response to - /tmp/dsn.xml')
+
+            doc = etree.fromstring(response.content)
+        else:
+            with open(dsn_data_file, 'r') as f:
+                doc = f.read()
+
         dishes = doc.xpath('/dsn/dish')
         result = {}
         for dish in dishes:
             dish_name, data = self.parse_dish(dish)
             result[dish_name] = data
         return result
+
+    def parse_station(self, station):
+        data = {
+            'friendly_name': station.get('friendlyName'),
+            'time_utc': to_int(station.get('timeUTC')),
+            'time_zone_offset': to_int(station.get('timeZoneOffset'))
+        }
+        return station.get('name'), data
 
     def parse_dish(self, dish):
         data = {
@@ -111,7 +194,8 @@ class DSNParser(object):
 
     def fetch_config(self):
         url = self.get_config_url()
-        self.log.debug("Fetching config %s" % url)
+        # self.log.debug("Fetching config %s" % url)
+        self.log.info('fetching config - %s' % url)
         response = self.http_session.get(url)
         doc = etree.fromstring(response.content)
         spacecraft = self.fetch_spacecraft(doc.xpath('/config/spacecraftMap/spacecraft'))
