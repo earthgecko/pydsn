@@ -254,6 +254,4 @@ INSERT INTO `extSpacecraft` (`ID`, `name`, `status`, `launch`, `constellation`, 
 INSERT INTO `extSpacecraft` (`ID`, `name`, `status`, `launch`, `constellation`, `friendlyName`, `location`, `url`, `agency`) VALUES(84, 'terr', 'active', '1999-12-18', NULL, 'TERRA', 'Earth', 'http://terra.nasa.gov/', 'nasa');
 INSERT INTO `extSpacecraft` (`ID`, `name`, `status`, `launch`, `constellation`, `friendlyName`, `location`, `url`, `agency`) VALUES(85, 'lcro', 'dead', '2009-06-18', NULL, 'LCROSS - Lunar CRater Observation and Sensing Satellite', 'Moon', 'http://lcross.arc.nasa.gov/', 'nasa,arc');
 INSERT INTO `extSpacecraft` (`ID`, `name`, `status`, `launch`, `constellation`, `friendlyName`, `location`, `url`, `agency`) VALUES(86, 'PRCN', 'active', '2014-12-03', NULL, 'PROCYON', 'Asteroid belt', 'https://directory.eoportal.org/web/eoportal/satellite-missions/p/procyon', 'jaxa');
-# @added 20160902 - Task #1614: Review odysseus654 database
-# New spacecraft seen in config - OSIRIS-REx
 INSERT INTO `extSpacecraft` (`ID`, `name`, `status`, `launch`, `constellation`, `friendlyName`, `location`, `url`, `agency`) VALUES(87, 'orx', 'active', '2016-09-08', NULL, 'OSIRIS-REx', 'Heliocentric', 'http://www.nasa.gov/osiris-rex, http://www.asteroidmission.org/', 'nasa');
