@@ -26,7 +26,7 @@ class DBSync(object):
         self.stderr_path = logfile
         self.log = logging.getLogger(__name__)
         self.config = ConfigParser.ConfigParser()
-        self.config.read('/home/gary/sandbox/of/github/earthgecko/pydsn/develop654/pydsn/dsn.conf')
+        self.config.read('dsn.conf')
         # self.db = MySQLDatabase(self.config.get('db', 'database'), **{
         self.db = PooledMySQLDatabase(self.config.get('db', 'database'),
 			host=self.config.get('db', 'host'),
