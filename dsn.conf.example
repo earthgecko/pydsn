@@ -1,0 +1,18 @@
+[db]
+database: <YOUR_DATABASE_NAME>
+host: <YOUR_DATABASE_IP_ADDRESS>
+user: <YOUR_DATABASE_USER>
+password: <YOUR_DATABASE_USERPASSWORD>
+
+[twitter]
+twitter_enabled: <True OR False # Python boolean>
+api_key: <YOUR_API_KEY>
+api_secret: <YOUR_API_SECRET>
+access_key: <YOUR_ACCESS_KEY>
+access_secret: <YOUR_ACCESS_SECRET>
+
+[hipchat]
+hipchat_enabled: <True OR False # Python boolean>
+hipchat_bot: <YOUR_HIPCHAT_NAME>
+hipchat_auth_token: <YOUR_HIPCHAT_AUTH_TOKEN>
+hipchat_room: <YOUR_HIPCHAT_ROOM_ID>

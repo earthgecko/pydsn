@@ -85,7 +85,9 @@ CREATE TABLE `dataEvent` (
 ) ENGINE=MyISAM DEFAULT CHARSET=utf8;
 
 CREATE TABLE `dataSignal` (
-  `ID` smallint unsigned NOT NULL AUTO_INCREMENT,
+# @modified 20160925 - Bug #1666: dsn DB - dataSignal ID SMALLINT
+#  `ID` smallint unsigned NOT NULL AUTO_INCREMENT,
+  `ID` mediumint unsigned NOT NULL AUTO_INCREMENT,
   `eventID` mediumint unsigned NOT NULL,
   `dataDishID` smallint unsigned NOT NULL,
   `configDishID` tinyint unsigned NOT NULL,
@@ -99,7 +101,9 @@ CREATE TABLE `dataSignal` (
 
 CREATE TABLE `dataSignalDet` (
   `eventID` mediumint unsigned NOT NULL,
-  `dataSignalID` smallint unsigned NOT NULL,
+# @modified 20160925 - Bug #1666: dsn DB - dataSignal ID SMALLINT
+#  `dataSignalID` samllint unsigned NOT NULL,
+  `dataSignalID` mediumint unsigned NOT NULL,
   `dataRate` double DEFAULT NULL,
   `frequency` double DEFAULT NULL,
   `power` double DEFAULT NULL,
@@ -107,7 +111,9 @@ CREATE TABLE `dataSignalDet` (
 ) ENGINE=MyISAM DEFAULT CHARSET=utf8;
 
 CREATE TABLE `dataSignalLastDet` (
-  `dataSignalID` smallint unsigned NOT NULL,
+# @modified 20160925 - Bug #1666: dsn DB - dataSignal ID SMALLINT
+#  `dataSignalID` samllint unsigned NOT NULL,
+  `dataSignalID` mediumint unsigned NOT NULL,
   `dataRate` double DEFAULT NULL,
   `frequency` double DEFAULT NULL,
   `power` double DEFAULT NULL,
@@ -256,3 +262,14 @@ INSERT INTO `extSpacecraft` (`ID`, `name`, `status`, `launch`, `constellation`, 
 INSERT INTO `extSpacecraft` (`ID`, `name`, `status`, `launch`, `constellation`, `friendlyName`, `location`, `url`, `agency`) VALUES(86, 'PRCN', 'active', '2014-12-03', NULL, 'PROCYON', 'Asteroid belt', 'https://directory.eoportal.org/web/eoportal/satellite-missions/p/procyon', 'jaxa');
 # @added 20160902 - New spacecraft seen - OSIRIS-REx
 INSERT INTO `extSpacecraft` (`ID`, `name`, `status`, `launch`, `constellation`, `friendlyName`, `location`, `url`, `agency`) VALUES(87, 'orx', 'active', '2016-09-08', NULL, 'OSIRIS-REx', 'Heliocentric', 'http://www.nasa.gov/osiris-rex, http://www.asteroidmission.org/', 'nasa');
+
+# @added 20160903 - Feature #1624: tweets table
+CREATE TABLE `tweets` (
+  `ID` mediumint unsigned NOT NULL AUTO_INCREMENT,
+  `name` varchar(20) NOT NULL,  # Account that tweeted
+  `tweet` varchar(140) NOT NULL,
+  `created` date DEFAULT NULL,
+  `uri` varchar(200) DEFAULT NULL,
+  PRIMARY KEY (`ID`),
+  KEY `tweets` (`name`)
+) ENGINE=MyISAM  DEFAULT CHARSET=utf8;

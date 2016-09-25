@@ -8,16 +8,52 @@ import logging
 from operator import itemgetter
 from peewee import Using
 from playhouse.pool import PooledMySQLDatabase
+from sys import path
+import traceback
+import resource
+from sys import version_info
+import os
+import errno
 
 from pprint import pprint
 
-logfile = '/tmp/pydsn.log'
+logfile = '/var/log/pydsn/dsn_dbsync.log'
+app = 'dbsync'
 logging.basicConfig(
     filename=logfile,
     filemode='a',
     level=logging.INFO,
     format="%(asctime)s :: %(process)s :: %(message)s",
     datefmt='%Y-%m-%d %H:%M:%S')
+
+config_file = '%s/dsn.conf' % (path[0])
+LOCAL_DEBUG = False
+
+python_version = int(version_info[0])
+
+
+def mkdir_p(path):
+    """
+    Create nested directories.
+
+    :param path: directory path to create
+    :type path: str
+    :return: returns True
+
+    """
+    try:
+        if python_version == 2:
+            mode_arg = int('0755')
+        if python_version == 3:
+            mode_arg = mode=0o755
+        os.makedirs(path, mode_arg)
+        return True
+    # Python >2.5
+    except OSError as exc:
+        if exc.errno == errno.EEXIST and os.path.isdir(path):
+            pass
+        else:
+            raise
 
 
 class DBSync(object):
@@ -26,14 +62,33 @@ class DBSync(object):
         self.stderr_path = logfile
         self.log = logging.getLogger(__name__)
         self.config = ConfigParser.ConfigParser()
-        self.config.read('dsn.conf')
+        self.config.read(config_file)
+
+        try:
+            mkdir_p('/tmp/pydsn')
+        except:
+            self.log.info(str(traceback.format_exc()))
+            self.log.info('error :: %s :: could not create /tmp/pydsn' % app)
+
+        if LOCAL_DEBUG:
+            self.log.info('%s :: debug :: Memory usage before DB connect: %s (kb)' % (app, resource.getrusage(resource.RUSAGE_SELF).ru_maxrss))
+
         # self.db = MySQLDatabase(self.config.get('db', 'database'), **{
-        self.db = PooledMySQLDatabase(self.config.get('db', 'database'),
-			host=self.config.get('db', 'host'),
-            user=self.config.get('db', 'user'),
-            password=self.config.get('db', 'password'),
-            stale_timeout=300  # 5 minutes
-        )
+        # @modified 20160903 - Bug #1620: dbsync - handle db failure gracefully
+        # Trying the original non Pooled method as peewee does not play nice
+        # when MySQL goes away if Pooled
+        # self.db = PooledMySQLDatabase(self.config.get('db', 'database'),
+        #    host=self.config.get('db', 'host'),
+        #    user=self.config.get('db', 'user'),
+        #    password=self.config.get('db', 'password'),
+        #    stale_timeout=300  # 5 minutes
+        # )
+        self.db = MySQLDatabase(self.config.get('db', 'database'), **{
+            'host': self.config.get('db', 'host'),
+            'user': self.config.get('db', 'user'),
+            'password': self.config.get('db', 'password')
+        })
+
         self.existingSites = None
         self.existingStates = None
         self.existingDishes = None
@@ -66,15 +121,16 @@ class DBSync(object):
                         if (site.friendlyname != siteData['friendly_name'] or
                                 site.latitude != siteData['latitude'] or
                                 site.longitude != siteData['longitude']):
-                            self.log.info("Updating config: site %s" % siteName)
-                            cmd = (ConfigSite.update(
+                            self.log.info('%s :: updating config: site %s' % (app, siteName))
+                            cmd = (
+                                ConfigSite.update(
                                     friendlyname=siteData['friendly_name'],
                                     latitude=siteData['latitude'],
                                     longitude=siteData['longitude'])
-                    			.where(ConfigSite.id == site.id))
+                                .where(ConfigSite.id == site.id))
                             cmd.execute()
                     else:
-                        self.log.info("Creating config: site %s" % siteName)
+                        self.log.info('%s :: creating config: site %s' % (app, siteName))
                         site = ConfigSite.create(
                             name=siteName,
                             friendlyname=siteData['friendly_name'],
@@ -88,15 +144,16 @@ class DBSync(object):
                             if (dish.configsiteid != site.id or
                                     dish.friendlyname != dishData['friendly_name'] or
                                     dish.type != dishData['type']):
-                                self.log.info("Updating config: dish %s" % dishName)
-                                cmd = (ConfigDish.update(
+                                self.log.info('%s :: updating config: dish %s' % (app, dishName))
+                                cmd = (
+                                    ConfigDish.update(
                                         configsiteid=site.id,
                                         friendlyname=dishData['friendly_name'],
                                         type=dishData['type'])
                                     .where(ConfigDish.id == dish.id))
                                 cmd.execute()
                         else:
-                            self.log.info("Creating config: dish %s" % dishName)
+                            self.log.info('%s :: creating config: dish %s' % (app, dishName))
                             ConfigDish.create(
                                 name=dishName,
                                 configsiteid=site.id,
@@ -114,12 +171,15 @@ class DBSync(object):
                     spacecraft = existingSpacecraft.get(spacecraftName, None)
                     if spacecraft:
                         if spacecraft.friendlyname != spacecraftDescr or spacecraft.flags != '':
-                            self.log.info("Updating config: spacecraft %s" % spacecraftName)
-                            cmd = (ConfigSpacecraft.update(friendlyname=spacecraftDescr, lastid=None, flags='')
+                            self.log.info('%s :: updating config: spacecraft %s' % (app, spacecraftName))
+                            cmd = (
+                                ConfigSpacecraft.update(
+                                    friendlyname=spacecraftDescr, lastid=None,
+                                    flags='')
                                 .where(ConfigSpacecraft.id == spacecraft.id))
                             cmd.execute()
                     else:
-                        self.log.info("Creating config: spacecraft %s" % spacecraftName)
+                        self.log.info('%s :: creating config: spacecraft %s' % (app, spacecraftName))
                         ConfigSpacecraft.create(name=spacecraftName, friendlyname=spacecraftDescr)
 
     def flush_ref(self):
@@ -158,21 +218,26 @@ class DBSync(object):
                         self.spacecraftById[spacecraft.lastid] = spacecraft
 
     def punch_data(self, data):
+        if LOCAL_DEBUG:
+            self.log.info('%s :: debug :: Memory usage start punch_data: %s (kb)' % (app, resource.getrusage(resource.RUSAGE_SELF).ru_maxrss))
         this_time = data['time']
         if not this_time:
-            self.log.warning('Ignoring response with no time')
+            self.log.warning('%s :: ignoring response with no time' % app)
             pprint(data)
             return False
-        self.log.info('Received data for time %d' % ((int)(this_time / 5000)))
+        self.log.info('%s :: received data for time %d' % (app, ((int)(this_time / 5000))))
         self.load_ref()
         # self.log.info('ref loaded')
+        # @added 20160903 - Bug #1618: dbsync.py irregularities in db data
+        if LOCAL_DEBUG:
+            self.log.info('%s :: ref loaded' % app)
 
         is_backdated = None
         if this_time == self.last_time:
-            self.log.info('Ignoring duplicate time %d' % this_time)
+            self.log.info('%s :: ignoring duplicate time %d' % (app, this_time))
             return False
         elif this_time < self.last_time:
-            self.log.info('Handling backdated data (%d < %d)' % (this_time, self.last_time))
+            self.log.info('%s :: handling backdated data (%d < %d)' % (app, this_time, self.last_time))
             is_backdated = this_time
         else:
             self.last_time = this_time
@@ -184,20 +249,60 @@ class DBSync(object):
                 stationData = data['stations'][stationName]
                 site = self.existingSites[stationName]
                 if stationData['time_zone_offset'] != site.timezoneoffset:
-                    with Using(self.db, [ConfigSite]):
-                        site.timezoneoffset = stationData['time_zone_offset']
-                        site.save()
-            # self.log.info('stations loaded')
+                    # @modified 20160903 - Bug #1620: dbsync - handle db failure gracefully
+                    # Added except handling so that this does not fail on MySQL being
+                    # unavailable due to a failure or restart
+                    try:
+                        with Using(self.db, [ConfigSite]):
+                            site.timezoneoffset = stationData['time_zone_offset']
+                            site.save()
+                        # self.log.info('stations loaded')
+                        # @added 20160903 - Bug #1618: dbsync.py irregularities in db data
+                        self.log.info('%s :: stations loaded' % app)
+                    except:
+                        self.log.info(traceback.format_exc())
+                        self.log.info('error :: %s :: MySQL error' % app)
+                        self.db.close()
+                        pass
 
-            # create the time event
-            with Using(self.db, [DataEvent]):
-                if DataEvent.select(DataEvent.time).where(DataEvent.time == this_time).exists():
-                    self.log.info('Ignoring previously logged time %d' % this_time)
-                    return False
-                event = DataEvent.create(time=this_time)
+            # @modified 20160903 - Bug #1620: dbsync - handle db failure gracefully
+            # Added except handling so that this does not fail on MySQL being
+            # unavailable due to a failure or restart
+            try:
+                # create the time event
+                with Using(self.db, [DataEvent]):
+                    if DataEvent.select(DataEvent.time).where(DataEvent.time == this_time).exists():
+                        self.log.info('%s :: ignoring previously logged time %d' % (app, this_time))
+                        return False
+                    event = DataEvent.create(time=this_time)
+                    # @added 20160903 - Bug #1618: dbsync.py irregularities in db data
+                    self.log.info('%s :: eventID created - %s' % (app, str(event.id)))
+            except:
+                self.log.info(traceback.format_exc())
+                self.log.info('error :: %s :: MySQL error' % app)
+                self.db.close()
+                pass
 
             # do everything else
-            self.punch_dishes(event.id, is_backdated, data['dishes'])
+            # @modified 20160903 - Bug #1620: dbsync - handle db failure gracefully
+            # Added except handling so that this does not fail on MySQL being
+            # unavailable due to a failure or restart
+            # raise err.OperationalError(2006, "MySQL server has gone away (%r)" % (e,))
+            # pymysql.err.OperationalError: (2006, "MySQL server has gone away (error(32, 'Broken pipe'))")
+            try:
+                self.punch_dishes(event.id, is_backdated, data['dishes'])
+                if LOCAL_DEBUG:
+                    self.log.info('%s :: debug :: Memory usage end punch_data: %s (kb)' % (app, resource.getrusage(resource.RUSAGE_SELF).ru_maxrss))
+            except:
+                self.log.info(traceback.format_exc())
+                self.log.info('error :: %s :: MySQL error' % app)
+                try:
+                    self.db.close()
+                except:
+                    pass
+                pass
+                return False
+
         return True
 
     def discover_arrays(self, dishes):
@@ -223,9 +328,12 @@ class DBSync(object):
         return results
 
     def punch_dishes(self, eventid, is_backdated, dishes):
-        with Using(self.db,[
-		ConfigDish, ConfigSpacecraft, ConfigState, DataDish,
-    	DataDishPos, DataTarget, DataSignal, DataSignalDet]):
+        if LOCAL_DEBUG:
+            self.log.info('%s :: debug :: Memory usage start punch_dishes: %s (kb)' % (app, resource.getrusage(resource.RUSAGE_SELF).ru_maxrss))
+        with Using(
+            self.db, [
+                ConfigDish, ConfigSpacecraft, ConfigState, DataDish,
+                DataDishPos, DataTarget, DataSignal, DataSignalDet]):
             arrayedSignals = self.discover_arrays(dishes)
             dishOut = []
             targetOut = []
@@ -240,13 +348,17 @@ class DBSync(object):
                 dishData = dishes[dishName]
                 flags = ','.join(sorted(dishData['flags']))
                 created = dishData['created']
-                self.log.info('created - %s' % str(created))
+                if LOCAL_DEBUG:
+                    self.log.info('%s :: created - %s' % (app, str(created)))
                 updated = dishData['updated']
+                # @added 20160903 - Bug #1618: dbsync.py irregularities in db data
+                if LOCAL_DEBUG:
+                    self.log.info('%s :: updated - %s' % (app, str(updated)))
                 created_time = calendar.timegm(created.utctimetuple()) * 1000 + created.microsecond / 1000
                 updated_time = calendar.timegm(updated.utctimetuple()) * 1000 + updated.microsecond / 1000
 
-				# collect the list of current spacecraft targets from the signal
-				# reports
+                # collect the list of current spacecraft targets from the signal
+                # reports
                 targets = {}
                 isTesting = False
                 for signalData in (dishData.get('down_signal', []) + dishData.get('up_signal', [])):
@@ -266,19 +378,21 @@ class DBSync(object):
                 if not self.dishHist:
                     self.dishHist = {}
                 if is_backdated:
-                    histEntry = (DataDish.select(DataDish)
-                            .join(DataEvent, on=(DataDish.eventid==DataEvent.id))
-                            .where((DataDish.configdishid==dish.id)&(DataEvent.time < is_backdated))
-                            .order_by(DataEvent.time.desc())
-                            .limit(1).first())
+                    histEntry = (
+                        DataDish.select(DataDish)
+                        .join(DataEvent, on=(DataDish.eventid == DataEvent.id))
+                        .where((DataDish.configdishid == dish.id) & (DataEvent.time < is_backdated))
+                        .order_by(DataEvent.time.desc())
+                        .limit(1).first())
                 elif dish.id in self.dishHist:
                     histEntry = self.dishHist[dish.id]
                 else:
-                    histEntry = (DataDish.select(DataDish)
-                            .join(DataEvent, on=(DataDish.eventid==DataEvent.id))
-                            .where(DataDish.configdishid==dish.id)
-                            .order_by(DataEvent.time.desc())
-                            .limit(1).first())
+                    histEntry = (
+                        DataDish.select(DataDish)
+                        .join(DataEvent, on=(DataDish.eventid == DataEvent.id))
+                        .where(DataDish.configdishid == dish.id)
+                        .order_by(DataEvent.time.desc())
+                        .limit(1).first())
                     if histEntry:
                         self.dishHist[dish.id] = histEntry
 
@@ -294,14 +408,14 @@ class DBSync(object):
                         histEntry.targetspacecraft2 != (targetList[1] if len(targetList) > 1 else None) or
                         histEntry.targetspacecraft3 != (targetList[2] if len(targetList) > 2 else None)):
                     histEntry = DataDish.create(
-                        configdishid = dish.id,
-                        eventid = eventid,
-                        createdtime = created_time,
-                        updatedtime = updated_time,
-                        flags = flags,
-                        targetspacecraft1 = targetList[0] if len(targetList) > 0 else None,
-                        targetspacecraft2 = targetList[1] if len(targetList) > 1 else None,
-                        targetspacecraft3 = targetList[2] if len(targetList) > 2 else None
+                        configdishid=dish.id,
+                        eventid=eventid,
+                        createdtime=created_time,
+                        updatedtime=updated_time,
+                        flags=flags,
+                        targetspacecraft1=targetList[0] if len(targetList) > 0 else None,
+                        targetspacecraft2=targetList[1] if len(targetList) > 1 else None,
+                        targetspacecraft3=targetList[2] if len(targetList) > 2 else None
                     )
                     self.dishHist[dish.id] = histEntry
                     signalHist = {}
@@ -310,7 +424,8 @@ class DBSync(object):
                     self.detailHist[dish.id] = detailHist
                 elif is_backdated:
                     (signalHist, detailHist) = self.collect_signals(histEntry, is_backdated)
-                elif not dish.id in self.signalHist:
+                # elif not dish.id in self.signalHist:
+                elif dish.id not in self.signalHist:
                     (signalHist, detailHist) = self.collect_signals(histEntry, None)
                     self.signalHist[dish.id] = signalHist
                     self.detailHist[dish.id] = detailHist
@@ -328,9 +443,13 @@ class DBSync(object):
                         self.targetHist[dish.id] = {}
                     targetHist = self.targetHist[dish.id]
 
-                self.punch_targets(eventid, is_backdated, dish, dishData['targets'], targetOut, targetHist)
-                self.punch_signals(eventid, dish, histEntry, dishData['down_signal'], dishData['up_signal'],
-                    arrayedSignals, signalHist, detailHist, signalOut)
+                self.punch_targets(
+                    eventid, is_backdated, dish, dishData['targets'],
+                    targetOut, targetHist)
+                self.punch_signals(
+                    eventid, dish, histEntry, dishData['down_signal'],
+                    dishData['up_signal'], arrayedSignals, signalHist,
+                    detailHist, signalOut)
 
                 if (dishData['azimuth_angle'] is not None and
                         dishData['elevation_angle'] is not None and
@@ -352,8 +471,12 @@ class DBSync(object):
             if len(signalOut) > 0:
                 cmd = DataSignalDet.insert_many(signalOut)
                 cmd.execute()
+            if LOCAL_DEBUG:
+                self.log.info('%s :: debug :: Memory usage end punch_dishes: %s (kb)' % (app, resource.getrusage(resource.RUSAGE_SELF).ru_maxrss))
 
     def punch_targets(self, eventid, is_backdated, dish, targets, targetOut, targetHist):
+        if LOCAL_DEBUG:
+            self.log.info('%s :: debug :: Memory usage start punch_targets: %s (kb)' % (app, resource.getrusage(resource.RUSAGE_SELF).ru_maxrss))
         for targetName in targets:
             targetData = targets[targetName]
 
@@ -366,11 +489,12 @@ class DBSync(object):
 
                 # find the previous version of this record
                 if is_backdated:
-                    histEntry = (DataTarget.select(DataTarget)
-                        .join(DataEvent, on=(DataTarget.eventid==DataEvent.id))
+                    histEntry = (
+                        DataTarget.select(DataTarget)
+                        .join(DataEvent, on=(DataTarget.eventid == DataEvent.id))
                         .where(
-                            (DataTarget.configdishid==dish.id) &
-                            (DataTarget.configspacecraftid==spacecraft.id) &
+                            (DataTarget.configdishid == dish.id) &
+                            (DataTarget.configspacecraftid == spacecraft.id) &
                             (DataEvent.time < is_backdated)
                         )
                         .order_by(DataEvent.time.desc())
@@ -380,9 +504,10 @@ class DBSync(object):
                 elif spacecraft.id in targetHist:
                     histEntry = targetHist[spacecraft.id]
                 else:
-                    histEntry = (DataTarget.select(DataTarget)
-                        .join(DataEvent, on=(DataTarget.eventid==DataEvent.id))
-                        .where((DataTarget.configdishid==dish.id) & (DataTarget.configspacecraftid==spacecraft.id))
+                    histEntry = (
+                        DataTarget.select(DataTarget)
+                        .join(DataEvent, on=(DataTarget.eventid == DataEvent.id))
+                        .where((DataTarget.configdishid == dish.id) & (DataTarget.configspacecraftid == spacecraft.id))
                         .order_by(DataEvent.time.desc())
                         .limit(1).dicts().first())
                     if histEntry:
@@ -402,10 +527,15 @@ class DBSync(object):
                     }
                     targetOut.append(newTarget)
                     targetHist[spacecraft.id] = newTarget
+                if LOCAL_DEBUG:
+                    self.log.info('%s :: debug :: Memory usage end punch_targets: %s (kb)' % (app, resource.getrusage(resource.RUSAGE_SELF).ru_maxrss))
 
     def collect_signals(self, dataDish, is_backdated):
-        query = (DataSignal.select(DataSignal.eventid)
-                .join(DataEvent, on=(DataSignal.eventid==DataEvent.id)))
+        if LOCAL_DEBUG:
+            self.log.info('%s :: debug :: Memory usage start collect_signals: %s (kb)' % (app, resource.getrusage(resource.RUSAGE_SELF).ru_maxrss))
+        query = (
+            DataSignal.select(DataSignal.eventid)
+            .join(DataEvent, on=(DataSignal.eventid == DataEvent.id)))
         if is_backdated:
             query = query.where((DataSignal.datadishid == dataDish.id) & (DataEvent.time < is_backdated))
         else:
@@ -416,27 +546,29 @@ class DBSync(object):
         details = {}
         if eventId:
             prevEntry = None
-            for entry in (DataSignal.select().where(
-                        (DataSignal.datadishid == dataDish.id) & (DataSignal.eventid == eventId)
-                    ).order_by(
-                        DataSignal.updown.asc(),
-                        DataSignal.configspacecraftid.asc(),
-                        DataSignal.flags.desc(),
-                        DataSignal.id.asc()
-                    )):
+            for entry in (
+                DataSignal.select().where(
+                    (DataSignal.datadishid == dataDish.id) & (DataSignal.eventid == eventId)
+                ).order_by(
+                    DataSignal.updown.asc(),
+                    DataSignal.configspacecraftid.asc(),
+                    DataSignal.flags.desc(),
+                    DataSignal.id.asc())):
                 if (not prevEntry or prevEntry.configspacecraftid != entry.configspacecraftid or
                         prevEntry.updown != entry.updown):
                     seq = 1
                 elif prevEntry.configspacecraftid == entry.configspacecraftid and prevEntry.flags < entry.flags:
-                    pass # slave connection
+                    pass  # slave connection
                 else:
                     seq = seq + 1
-                key = (unicode(entry.configspacecraftid) + ('u' if entry.updown == 'up' else 'd') +
+                key = (
+                    unicode(entry.configspacecraftid) + ('u' if entry.updown == 'up' else 'd') +
                     ':' + unicode(seq) + ('s' if 'slave' in entry.flags.lower() else ''))
                 results[key] = entry
 
-                query = (DataSignalDet.select(DataSignalDet.datarate, DataSignalDet.frequency, DataSignalDet.power)
-                    .join(DataEvent, on=(DataSignalDet.eventid==DataEvent.id)))
+                query = (
+                    DataSignalDet.select(DataSignalDet.datarate, DataSignalDet.frequency, DataSignalDet.power)
+                    .join(DataEvent, on=(DataSignalDet.eventid == DataEvent.id)))
                 if is_backdated:
                     query = query.where((DataSignalDet.datasignalid == entry.id) & (DataEvent.time < is_backdated))
                 else:
@@ -444,9 +576,16 @@ class DBSync(object):
                 details[entry.id] = query.order_by(DataEvent.time.desc()).limit(1).dicts().first()
 
                 prevEntry = entry
+
+        if LOCAL_DEBUG:
+            self.log.info('%s :: debug :: Memory usage end collect_signals: %s (kb)' % (app, resource.getrusage(resource.RUSAGE_SELF).ru_maxrss))
+
         return (results, details)
 
     def collect_parsed_signals(self, signals, isUp, arrayedSignals, ourSignals):
+        if LOCAL_DEBUG:
+            self.log.info('%s :: debug :: Memory usage start collect_parsed_signals: %s (kb)' % (app, resource.getrusage(resource.RUSAGE_SELF).ru_maxrss))
+
         # collect and identify the signals so we can match them up to previous signal reports
         signalList = []
         for signalData in signals:
@@ -459,7 +598,7 @@ class DBSync(object):
 
             state = self.get_state(signalData['debug'], isUp, signalData['type'])
 
-            #collect signal flags
+            # collect signal flags
             flags = set()
             flagsort = 0
             if arrayedSignals and spacecraft.id in arrayedSignals:
@@ -493,17 +632,23 @@ class DBSync(object):
                 seq = 1
             elif (prevEntry['spacecraft_id'] == entry['spacecraft_id'] and
                     prevEntry['flagsort'] < entry['flagsort']):
-                pass # slave connection
+                pass  # slave connection
             else:
                 seq = seq + 1
 
             # create a unique id for this signal
-            key = (unicode(entry['spacecraft_id']) + ('u' if isUp else 'd') +
+            key = (
+                unicode(entry['spacecraft_id']) + ('u' if isUp else 'd') +
                 ':' + unicode(seq) + ('s' if 'slave' in entry['flags'] else ''))
             ourSignals[key] = entry
             prevEntry = entry
 
+        if LOCAL_DEBUG:
+            self.log.info('%s :: debug :: Memory usage end collect_parsed_signals: %s (kb)' % (app, resource.getrusage(resource.RUSAGE_SELF).ru_maxrss))
+
     def punch_signals(self, eventid, dish, dataDish, signalDown, signalUp, arrayedSignals, signalHist, detailHist, signalOut):
+        if LOCAL_DEBUG:
+            self.log.info('%s :: debug :: Memory usage start punch_signals: %s (kb)' % (app, resource.getrusage(resource.RUSAGE_SELF).ru_maxrss))
 
         # collect the signals
         ourSignals = {}
@@ -513,7 +658,7 @@ class DBSync(object):
         # has anything changed in these signals?
         isChanged = False
         if len(ourSignals) != len(signalHist):
-            self.log.info('CHANGED: %d != %d' % (len(ourSignals), len(signalHist)))
+            self.log.info('%s :: CHANGED: %d != %d' % (app, len(ourSignals), len(signalHist)))
             isChanged = True
 
         if not isChanged:
@@ -526,10 +671,10 @@ class DBSync(object):
                 histEntry = signalHist.get(key, None)
                 if (not histEntry) or (histEntry.stateid != state.id):
                     if not histEntry:
-                        self.log.info('CHANGED: no entry %s' % key)
+                        self.log.info('%s :: CHANGED: no entry %s' % (app, key))
                         pprint(signalHist)
                     else:
-                        self.log.info('CHANGED(%s on %d): %d -> %s[%d]' % (key, histEntry.configspacecraftid, histEntry.stateid, state.name, state.id))
+                        self.log.info('%s :: CHANGED(%s on %d): %d -> %s[%d]' % (app, key, histEntry.configspacecraftid, histEntry.stateid, state.name, state.id))
                     isChanged = True
                     break
 
@@ -543,7 +688,17 @@ class DBSync(object):
             if isChanged:
                 # our state has changed, create a new signal record
                 spacecraft = entry['spacecraft']
-                self.log.info('new signal(%s on %d) has state=%s[%d], flags=%s' % (key, spacecraft.id, state.name, state.id, ','.join(entry['flags'])))
+                self.log.info('%s :: new signal(%s on %d) has state=%s[%d], flags=%s' % (app, key, spacecraft.id, state.name, state.id, ','.join(entry['flags'])))
+
+                if LOCAL_DEBUG:
+                    self.log.info('debug :: %s :: for eventID %s' % (app, str(eventid)))
+                    self.log.info('debug :: %s :: for datadishid %s' % (app, str(dataDish.id)))
+                    self.log.info('debug :: %s :: for configdishid %s' % (app, str(dish.id)))
+                    debug_updown = 'up' if entry['isUp'] else 'down'
+                    self.log.info('debug :: %s :: for updown %s' % (app, str(debug_updown)))
+                    self.log.info('debug :: %s :: for stateid %s' % (app, str(state.id)))
+                    self.log.info('debug :: %s :: for configspacecraftid %s' % (app, str(spacecraft.id)))
+
                 baseSignal = DataSignal.create(
                     eventid=eventid,
                     datadishid=dataDish.id,
@@ -558,7 +713,7 @@ class DBSync(object):
                 baseSignal = signalHist[key]
 
             # create a new signal report
-            if not(state.valuetype in ('none','idle','idle+')):
+            if not(state.valuetype in ('none', 'idle', 'idle+')):
                 signalData = entry['data']
                 lastSignalData = detailHist.get(baseSignal.id, None)
                 if (not lastSignalData or lastSignalData['datarate'] != signalData['data_rate'] or
@@ -575,6 +730,9 @@ class DBSync(object):
                     detailHist[baseSignal.id] = newRecord
                     signalOut.append(newRecord)
 
+        if LOCAL_DEBUG:
+            self.log.info('%s :: debug :: Memory usage end punch_signals: %s (kb)' % (app, resource.getrusage(resource.RUSAGE_SELF).ru_maxrss))
+
     def get_state(self, debug, isUp, signalType):
         state = self.existingStates.get(debug, None)
         if state:
@@ -582,15 +740,15 @@ class DBSync(object):
 
         parsed = parse_debug(debug, isUp)
         state = ConfigState.create(
-            name = debug,
-            updown = 'UP' if isUp else 'down',
-            signaltype = signalType,
-            decoder1 = parsed.get('decoder1', None),
-            decoder2 = parsed.get('decoder2', None),
-            encoding = parsed.get('encoding', None),
-            task = parsed.get('task', None),
-            flags = ','.join(parsed.get('flags', set())),
-            valuetype = parsed.get('valueType', None)
+            name=debug,
+            updown='UP' if isUp else 'down',
+            signaltype=signalType,
+            decoder1=parsed.get('decoder1', None),
+            decoder2=parsed.get('decoder2', None),
+            encoding=parsed.get('encoding', None),
+            task=parsed.get('task', None),
+            flags=','.join(parsed.get('flags', set())),
+            valuetype=parsed.get('valueType', None)
         )
         self.existingStates[state.name] = state
         return state

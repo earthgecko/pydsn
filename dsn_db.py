@@ -5,8 +5,11 @@ import logging
 from requests.exceptions import ConnectionError
 from lxml.etree import LxmlError
 from dsnparser import DSNParserDB
+import traceback
+import resource
 
-logfile = '/tmp/pydsn.log'
+logfile = '/var/log/pydsn/dsn_dbsync.log'
+app = 'dsn_db'
 # logging.basicConfig(filename=logfile, level=logging.INFO)
 logging.basicConfig(
     filename=logfile,
@@ -14,6 +17,8 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s :: %(process)s :: %(message)s",
     datefmt='%Y-%m-%d %H:%M:%S')
+
+LOCAL_DEBUG = False
 
 
 class DSN_DB(object):
@@ -37,7 +42,7 @@ class DSN_DB(object):
                 self.sites, self.spacecraft = self.parser.fetch_config()
                 if self.config_callback:
                     self.config_callback(self.sites, self.spacecraft)
-                    self.log.info('Config processing complete')
+                    self.log.info('%s :: config processing complete' % app)
 
             now = time.time()
             if self.next_data_update <= now:
@@ -45,19 +50,30 @@ class DSN_DB(object):
                 new_data = self.parser.fetch_data()
                 if self.data_callback:
                     if not self.data_callback(new_data):
-                        self.log.info('Status processing rejected')
+                        self.log.info('%s :: status processing rejected' % app)
                     else:
-                        self.log.info('Status processing complete')
+                        self.log.info('%s :: status processing complete' % app)
 
         except ConnectionError, e:
-            self.log.warn("Unable to fetch data from DSN: %s" % e)
+            self.log.warn('%s :: unable to fetch data from DSN: %s' % (app, str(e)))
             return
         except LxmlError, e:
-            self.log.warn("Unable to parse data: %s", e)
+            self.log.warn('%s :: unable to parse data: %s' % (app, str(e)))
             return
 
     def run(self):
         while True:
-            self.update()
+            try:
+                if LOCAL_DEBUG:
+                    self.log.info('%s :: debug :: Memory usage start self.update: %s (kb)' % (app, resource.getrusage(resource.RUSAGE_SELF).ru_maxrss))
+                self.update()
+            except:
+                self.log.info(traceback.format_exc())
+                self.log.info('error :: %s :: self.update() error' % app)
+                pass
+
+            if LOCAL_DEBUG:
+                self.log.info('%s :: debug :: Memory usage end self.update: %s (kb)' % (app, resource.getrusage(resource.RUSAGE_SELF).ru_maxrss))
+
             # time.sleep(1)
             time.sleep(self.status_update_interval)

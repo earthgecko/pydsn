@@ -13,8 +13,12 @@ try:
     from urllib.parse import urlparse
 except ImportError:
     from urlparse import urlparse
+# from multiprocessing import Process, Manager
+import resource
+import traceback
 
-logfile = '/tmp/pydsn.log'
+logfile = '/var/log/pydsn/dsn.log'
+app = 'dsn'
 # logging.basicConfig(filename=logfile, level=logging.INFO)
 logging.basicConfig(
     filename=logfile,
@@ -22,6 +26,12 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s :: %(process)s :: %(message)s",
     datefmt='%Y-%m-%d %H:%M:%S')
+
+LOCAL_DEBUG = False
+
+heapy_enabled = False
+if heapy_enabled:
+    from guppy import hpy
 
 
 class DSN(object):
@@ -43,19 +53,25 @@ class DSN(object):
         # @added 20160902 - Merging russss and odysseus654
         self.config_callback = None
         self.data_callback = None    # Called for every new data update
+        # self.manager = Manager()
 
     def update(self):
         try:
+            # Attempt at multiprocessing does not work
+            # from parser import DSNParser
+            # parser = DSNParser()
             if self.last_config_update is None or \
                self.last_config_update < datetime.now() - timedelta(minutes=self.config_update_interval):
                 self.sites, self.spacecraft = self.parser.fetch_config()
+                # self.sites, self.spacecraft = parser.fetch_config()
             new_data = self.parser.fetch_data()
-            self.log.info('new data fetched from DSN')
+            # new_data = parser.fetch_data()
+            self.log.info('dsn :: new data fetched from DSN')
         except ConnectionError, e:
-            self.log.warn("Unable to fetch data from DSN: %s" % e)
+            self.log.warn('dsn :: unable to fetch data from DSN: %s' % e)
             return
         except LxmlError, e:
-            self.log.warn("Unable to parse data: %s", e)
+            self.log.warn('dsn :: unable to parse data: %s', e)
             return
 
         if self.data is not None:
@@ -88,5 +104,50 @@ class DSN(object):
 
     def run(self):
         while True:
-            self.update()
+            # self.log.info('%s :: debug :: Memory usage start self.update: %s (kb)' % (app, resource.getrusage(resource.RUSAGE_SELF).ru_maxrss))
+            if heapy_enabled:
+                hp = hpy()
+                before = hp.heap()
+                self.log.info('%s :: debug :: heapy dump in before before self.update')
+                self.log.info(before)
+            try:
+                self.update()
+            except:
+                return
+
+            if LOCAL_DEBUG:
+                self.log.info('%s :: debug :: Memory usage end self.update: %s (kb)' % (app, resource.getrusage(resource.RUSAGE_SELF).ru_maxrss))
+
+            if heapy_enabled:
+                after = hp.heap()
+                self.log.info('%s :: debug :: heapy dump after self.update' % app)
+                self.log.info(after)
+                self.log.info('%s :: debug :: heapy dump leftover after self.update' % app)
+                leftover = after - before
+                self.log.info(leftover)
+
+            # Attempt at multiprocessing does not work
+            # self.log.info('dsn :: spawning process to fetch data from DSN')
+            # spawned_pids = []
+            # p = Process(target=self.update())
+            # p.start()
+            # spawned_pids.append(p.pid)
+            # for pid in spawned_pids:
+            #     self.log.info('dsn :: spawned pid %s to fetch data from DSN' % str(pid))
+
+            # Force a max. `timeout` or wait for the process to finish
+            # p.join(9)
+
+            # If thread is still active, it didn't finish: raise TimeoutError
+            # if p.is_alive():
+            #     p.terminate()
+            #     p.join()
+            #     for pid in spawned_pids:
+            #         self.log.info('error :: dsn :: spawned pid %s failed to fetch data, timeout reached' % str(pid))
+            #    raise TimeoutError
+
+            # for pid in spawned_pids:
+            #     self.log.info('dsn :: spawned pid %s fetched data' % str(pid))
+
             sleep(self.status_update_interval)
+            # return

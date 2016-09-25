@@ -7,6 +7,9 @@ import paste.httpheaders
 from lxml.builder import E
 import sdxf2
 import urlparse
+from sys import path
+
+config_file = '%s/dsn.conf' % (path[0])
 
 
 def application(environ, start_response):
@@ -38,7 +41,7 @@ def pick_if_one(arr):
 
 def get_database():
     config = ConfigParser.ConfigParser()
-    config.read('dsn.conf')
+    config.read(config_file)
     # db = MySQLDatabase(self.config.get('db', 'database'), **{
     db = PooledMySQLDatabase(self.config.get('db', 'database'),
         host=self.config.get('db', 'host'),

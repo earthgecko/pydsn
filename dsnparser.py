@@ -10,7 +10,7 @@ import time
 import os
 import stat
 
-logfile = '/tmp/pydsn.log'
+logfile = '/var/log/pydsn/dsn_dbsync.log'
 app = 'dsnparser'
 logging.basicConfig(
     filename=logfile,
@@ -19,8 +19,10 @@ logging.basicConfig(
     format="%(asctime)s :: %(process)s :: %(message)s",
     datefmt='%Y-%m-%d %H:%M:%S')
 
-dsn_data_file = '/tmp/dsn.data.xml'
-dsn_config_file = '/tmp/dsn.config.xml'
+LOCAL_DEBUG = False
+
+dsn_data_file = '/tmp/pydsn/dsn.data.xml'
+dsn_config_file = '/tmp/pydsn/dsn.config.xml'
 
 
 def to_decimal(value):
@@ -67,32 +69,38 @@ class DSNParserDB(object):
             file_age = file_age_in_seconds(dsn_data_file)
             if file_age < 10:
                 get_data = False
-                self.log.info('%s :: using local data xml file - %s old' % (app, str(file_age)))
+                self.log.info('%s :: using local data xml file - %s seconds old' % (app, str(file_age)))
 
         if get_data:
             url = self.get_url()
-            self.log.info("Fetching %s" % url)
+            if LOCAL_DEBUG:
+                self.log.info('%s :: fetching %s' % (app, url))
             try:
                 response = self.http_session.get(url)
                 responsetime = eut.parsedate(response.headers['date'])
                 responsesec = calendar.timegm(responsetime)
-                self.log.info('response date: %s -> %d (%d)' % (response.headers['date'], responsesec, int(responsesec / 5)))
+                self.log.info('%s :: response date: %s -> %d (%d)' % (app, response.headers['date'], responsesec, int(responsesec / 5)))
+
+                if str(response.content) == '<dsn><timestamp>NaN</timestamp></dsn>':
+                    self.log.info('error :: %s :: NASA responded with no dsn data in the XML' % (app))
+                    return None
+
                 # @added 20160902 - Task #1616: Merge russss and odysseus654
                 # Write the content out to file so that it can be used by dbsync
                 try:
-                    with open('/tmp/dsn.xml', 'w') as fh:
+                    with open(dsn_data_file, 'w') as fh:
                         fh.write(response.content)
                 except:
-                    self.log.info('error :: failed to write response to - /tmp/dsn.xml')
+                    self.log.info('error :: %s :: failed to write response to - %s' % (app, dsn_data_file))
                 doc = etree.fromstring(response.content)
             except:
                 self.log.info('%s' % (traceback.format_exc()))
-                self.log.info('error :: failed to get URL - %s' % (str(url)))
+                self.log.info('error :: %s :: failed to get URL - %s' % (app, str(url)))
                 response = 'None'
                 return None
         else:
             with open(dsn_data_file, 'r') as f:
-                doc = f.read()
+                doc = etree.fromstring(f.read())
         # doc = etree.fromstring(response.content)
 
         dishList = doc.xpath('/dsn/dish')
@@ -156,8 +164,8 @@ class DSNParserDB(object):
         data = {
             'spacecraft': target.get('name'),
             'spacecraft_id': int(target.get('id')),
-            'up_range': float(target.get('uplegRange')),      # Up leg range, meters
-            'down_range': float(target.get('downlegRange')),  # Down leg range, meters
+            'up_range': float(target.get('uplegRange')),      # Up leg range, kilometers
+            'down_range': float(target.get('downlegRange')),  # Down leg range, kilometers
             'rtlt': float(target.get('rtlt'))                 # Round-trip light time, in seconds
         }
         return target.get('name'), data
@@ -188,19 +196,19 @@ class DSNParserDB(object):
             file_age = file_age_in_seconds(dsn_config_file)
             if file_age < 120:
                 get_data = False
-                self.log.info('%s :: using local config xml file - %s old' % (app, str(file_age)))
+                self.log.info('%s :: using local config xml file - %s seconds old' % (app, str(file_age)))
 
         if get_data:
             try:
                 url = self.get_config_url()
-                self.log.info("Fetching config %s" % url)
+                self.log.info('%s :: fetching config %s' % (app, url))
                 response = self.http_session.get(url)
                 responsetime = eut.parsedate(response.headers['date'])
                 responsesec = calendar.timegm(responsetime)
-                self.log.info('response date: %s -> %d (%d)' % (response.headers['date'], responsesec, int(responsesec / 5)))
+                self.log.info('%s :: response date: %s -> %d (%d)' % (app, response.headers['date'], responsesec, int(responsesec / 5)))
                 doc = etree.fromstring(response.content)
             except:
-                self.log.info('error :: failed to fetch config from %s' % url)
+                self.log.info('error :: %s :: failed to fetch config from %s' % (app, url))
         else:
             with open(dsn_config_file, 'r') as f:
                 doc = f.read()
