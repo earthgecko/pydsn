@@ -263,7 +263,7 @@ INSERT INTO `extSpacecraft` (`ID`, `name`, `status`, `launch`, `constellation`, 
 # @added 20160902 - New spacecraft seen - OSIRIS-REx
 INSERT INTO `extSpacecraft` (`ID`, `name`, `status`, `launch`, `constellation`, `friendlyName`, `location`, `url`, `agency`) VALUES(87, 'orx', 'active', '2016-09-08', NULL, 'OSIRIS-REx', 'Heliocentric', 'http://www.nasa.gov/osiris-rex, http://www.asteroidmission.org/', 'nasa');
 # @added 20161016 - As per https://github.com/earthgecko/pydsn/issues/2 - Add Trace Gas Orbiter (TGO)
-INSERT INTO `extSpacecraft` (`ID`, `name`, `status`, `launch`, `constellation`, `friendlyName`, `location`, `url`, `agency`) VALUES(143, 'tgo', 'active', '2016-09-10', NULL, 'Trace Gas Orbiter', 'Mars', 'http://sci.esa.int/mars-express/', 'esa');
+INSERT INTO `extSpacecraft` (`ID`, `name`, `status`, `launch`, `constellation`, `friendlyName`, `location`, `url`, `agency`) VALUES(88, 'tgo', 'active', '2016-09-10', NULL, 'Trace Gas Orbiter', 'Mars', 'http://sci.esa.int/mars-express/', 'esa');
 
 # @added 20160903 - Feature #1624: tweets table
 CREATE TABLE `tweets` (
