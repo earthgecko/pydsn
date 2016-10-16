@@ -262,6 +262,8 @@ INSERT INTO `extSpacecraft` (`ID`, `name`, `status`, `launch`, `constellation`, 
 INSERT INTO `extSpacecraft` (`ID`, `name`, `status`, `launch`, `constellation`, `friendlyName`, `location`, `url`, `agency`) VALUES(86, 'PRCN', 'active', '2014-12-03', NULL, 'PROCYON', 'Asteroid belt', 'https://directory.eoportal.org/web/eoportal/satellite-missions/p/procyon', 'jaxa');
 # @added 20160902 - New spacecraft seen - OSIRIS-REx
 INSERT INTO `extSpacecraft` (`ID`, `name`, `status`, `launch`, `constellation`, `friendlyName`, `location`, `url`, `agency`) VALUES(87, 'orx', 'active', '2016-09-08', NULL, 'OSIRIS-REx', 'Heliocentric', 'http://www.nasa.gov/osiris-rex, http://www.asteroidmission.org/', 'nasa');
+# @added 20161016 - New spacecraft seen - TGO - Trace Gas Orbiter
+INSERT INTO `extSpacecraft` (`ID`, `name`, `status`, `launch`, `constellation`, `friendlyName`, `location`, `url`, `agency`) VALUES(143, 'tgo', 'active', '2016-09-10', NULL, 'Trace Gas Orbiter', 'Mars', 'http://sci.esa.int/mars-express/', 'esa');
 
 # @added 20160903 - Feature #1624: tweets table
 CREATE TABLE `tweets` (

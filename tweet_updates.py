@@ -55,6 +55,14 @@ dscc_locations = {
     'gdscc': (35.426667, -116.89)
 }
 
+# @added 20160927 - Feature #1624: tweets table
+# Added dscc_locations_country
+dscc_locations_country = {
+    'mdscc': 'ES',
+    'cdscc': 'AU',
+    'gdscc': 'US'
+}
+
 
 def to_GHz(freq):
     if freq is None:
@@ -235,11 +243,19 @@ class TweetDSN(object):
             self.log.warn('%s :: Antenna site %s not found in dscc_locations' % (app, antenna))
             return
         lat, lon = dscc_locations[antenna['site']]
+        # @added 20160927 - Feature #1624: tweets table
+        # Added dscc_locations_country
+        country = dscc_locations_country[antenna['site']]
         old_state = self.state[spacecraft]
         message = None
         if state.status == 'carrier' and old_state.status == 'none':
-            message = "%s carrier lock on %s\nFrequency: %sGHz\n" % \
-                      (antenna['friendly_name'], sc_name,
+            # @modified 20160927 - Feature #1624: tweets table
+            # Added dscc_locations_country
+            # message = "%s carrier lock on %s\nFrequency: %sGHz\n" % \
+            #           (antenna['friendly_name'], sc_name,
+            #            to_GHz(state.data['frequency']))
+            message = "%s %s carrier lock on %s\nFrequency: %sGHz\n" % \
+                      (country, antenna['friendly_name'], sc_name,
                        to_GHz(state.data['frequency']))
             # Ignore obviously wrong Rx power numbers - sometimes we see a lock before
             # Rx power settles down.
@@ -247,8 +263,14 @@ class TweetDSN(object):
                 message += "Signal strength: %sdBm\n" % (int(state.data['power']))
             message += state.data['debug']
         if state.status == 'data' and old_state.status in ('none', 'carrier'):
-            message = "%s receiving data from %s at %s.\n%s" % \
-                      (antenna['friendly_name'], sc_name, format_datarate(state.data['data_rate']),
+            # @modified 20160927 - Feature #1624: tweets table
+            # Added dscc_locations_country
+            # message = "%s receiving data from %s at %s.\n%s" % \
+            #           (antenna['friendly_name'], sc_name, format_datarate(state.data['data_rate']),
+            #            state.data['debug'])
+            message = "%s %s receiving data from %s at %s.\n%s" % \
+                      (country, antenna['friendly_name'], sc_name,
+                       format_datarate(state.data['data_rate']),
                        state.data['debug'])
         if message is not None:
             now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
