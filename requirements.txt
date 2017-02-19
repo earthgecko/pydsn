@@ -1,21 +1,21 @@
-six==1.1.0
-lxml==3.6.4
+six==1.10.0
+lxml==3.7.3
 # @added 20160905 - NOTE six must be installed BEFORE requests on python-2.7.12
 # otherwise urllib.parser quote will fail
-requests==2.11.1
-python-dateutil==2.5.3
+requests==2.13.0
+python-dateutil==2.6.0
 oauthlib==1.1.2
-requests-oauthlib==0.6.2
+requests-oauthlib==0.8.0
 tweepy==3.5.0
 paste==2.0.3
-pymysql==0.7.7
-peewee==2.8.3
+pymysql==0.7.10
+peewee==2.8.5
 guppy==0.1.10
 # @added 20160909 - Added dsn enable_hipchat - sends tweets to a hipchat room
 python-simple-hipchat==0.4.0
 traceback2==1.4.0
 
 # python-daemon and deps
-docutils==0.12
+docutils==0.13.1
 lockfile==0.12.2
-python-daemon==2.1.1
+python-daemon==2.1.2
